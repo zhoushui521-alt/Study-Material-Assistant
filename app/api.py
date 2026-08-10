@@ -1,5 +1,6 @@
 """学习资料助手的最小 FastAPI 服务。"""
 
+import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -26,6 +27,14 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.agent_service import (
+    AGENT_MAX_MESSAGE_LENGTH,
+    AgentExecutionError,
+    AgentResult,
+    AgentService,
+    AgentTimeoutError,
+    create_agent_service,
+)
 from app.langchain_rag import LangChainRAGError, source_label
 from app.material_ingestion import (
     MaterialConflictError,
@@ -101,6 +110,28 @@ class AskRequest(BaseModel):
 class AskResponse(BaseModel):
     answer: str
     sources: list[str]
+
+
+class AgentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=AGENT_MAX_MESSAGE_LENGTH)
+    confirm_api_cost: Literal[True]
+    allow_web_preview: bool = False
+
+    @field_validator("message")
+    @classmethod
+    def strip_and_validate_message(cls, value: str) -> str:
+        message = value.strip()
+        if not message:
+            raise ValueError("Agent 消息不能为空。")
+        return message
+
+
+class AgentResponse(BaseModel):
+    answer: str
+    sources: list[str]
+    tools_used: list[str]
 
 
 class StagedMaterialResponse(BaseModel):
@@ -210,6 +241,7 @@ async def lifespan(api: FastAPI) -> AsyncIterator[None]:
             if service is not None:
                 service.close()
         finally:
+            api.state.agent_service = None
             api.state.rag_service = None
 
 
@@ -219,6 +251,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.state.rag_service = None
+app.state.agent_service = None
 app.state.material_manager = MaterialManager()
 app.state.request_history_writer = RequestHistoryWriter()
 app.state.operation_guard = OperationGuard()
@@ -376,6 +409,34 @@ def get_rag_service_provider(request: Request) -> Callable[[], RAGService]:
     return lambda: get_rag_service(request)
 
 
+def get_agent_service(request: Request) -> AgentService:
+    """按需创建单个受限 Agent，并保证它与当前 RAG 服务使用同一份索引状态。"""
+    service = getattr(request.app.state, "agent_service", None)
+    if service is not None:
+        return service
+
+    while True:
+        rag_service = get_rag_service(request)
+        with _service_lock:
+            service = getattr(request.app.state, "agent_service", None)
+            if service is not None:
+                return service
+            if getattr(request.app.state, "rag_service", None) is not rag_service:
+                continue
+            service = create_agent_service(
+                rag_service,
+                request.app.state.material_manager,
+                WebMaterialService(request.app.state.material_manager),
+            )
+            request.app.state.agent_service = service
+            return service
+
+
+def get_agent_service_provider(request: Request) -> Callable[[], AgentService]:
+    """返回惰性 Agent 获取器，确保无效或未确认费用的请求不会初始化模型。"""
+    return lambda: get_agent_service(request)
+
+
 def get_material_manager(request: Request) -> MaterialManager:
     """返回当前进程复用的资料管理服务。"""
     return request.app.state.material_manager
@@ -395,6 +456,7 @@ def invalidate_rag_service(api: FastAPI) -> None:
     """资料索引变化后关闭旧 Chroma 客户端，让下一次问答重新初始化。"""
     with _service_lock:
         service = getattr(api.state, "rag_service", None)
+        api.state.agent_service = None
         api.state.rag_service = None
     if service is not None:
         try:
@@ -703,6 +765,48 @@ def ask_documents(
     return AskResponse(
         answer=result.answer,
         sources=[source_label(document) for document in result.sources],
+    )
+
+
+@app.post("/api/agent", response_model=AgentResponse)
+async def run_agent(
+    payload: AgentRequest,
+    request: Request,
+    guard: Annotated[OperationGuard, Depends(get_operation_guard)],
+    service_provider: Annotated[
+        Callable[[], AgentService],
+        Depends(get_agent_service_provider),
+    ],
+) -> AgentResponse:
+    """在显式费用确认和单次授权边界内运行受限 LangChain Agent。"""
+    try:
+        with guard.acquire("agent", units=1):
+            service = await asyncio.to_thread(service_provider)
+            result: AgentResult = await service.ask(
+                payload.message,
+                allow_web_preview=payload.allow_web_preview,
+            )
+    except OperationProtectionError as error:
+        request.state.error_category = "agent_protected"
+        raise_operation_http_error(error)
+        raise
+    except AgentTimeoutError as error:
+        request.state.error_category = "agent_timeout"
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Agent 处理超时。",
+        ) from error
+    except AgentExecutionError as error:
+        request.state.error_category = "agent_processing"
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Agent 处理失败。",
+        ) from error
+
+    return AgentResponse(
+        answer=result.answer,
+        sources=list(result.sources),
+        tools_used=list(result.tools_used),
     )
 
 

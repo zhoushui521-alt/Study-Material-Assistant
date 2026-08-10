@@ -10,6 +10,9 @@ from time import monotonic
 from typing import Literal
 
 from app.security_limits import (
+    AGENT_MAX_CALLS_PER_WINDOW,
+    AGENT_MAX_UNITS_PER_PROCESS,
+    AGENT_WINDOW_SECONDS,
     ASK_MAX_CALLS_PER_WINDOW,
     ASK_MAX_UNITS_PER_PROCESS,
     ASK_WINDOW_SECONDS,
@@ -26,7 +29,14 @@ from app.security_limits import (
 )
 
 
-OperationName = Literal["ask", "index", "stage", "delete", "web_preview"]
+OperationName = Literal[
+    "ask",
+    "agent",
+    "index",
+    "stage",
+    "delete",
+    "web_preview",
+]
 
 
 @dataclass(frozen=True)
@@ -43,6 +53,12 @@ DEFAULT_OPERATION_POLICIES: Mapping[OperationName, OperationPolicy] = {
         max_calls_per_window=ASK_MAX_CALLS_PER_WINDOW,
         max_units_per_operation=1,
         max_units_per_process=ASK_MAX_UNITS_PER_PROCESS,
+    ),
+    "agent": OperationPolicy(
+        window_seconds=AGENT_WINDOW_SECONDS,
+        max_calls_per_window=AGENT_MAX_CALLS_PER_WINDOW,
+        max_units_per_operation=1,
+        max_units_per_process=AGENT_MAX_UNITS_PER_PROCESS,
     ),
     "index": OperationPolicy(
         window_seconds=INDEX_WINDOW_SECONDS,
