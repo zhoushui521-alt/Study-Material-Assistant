@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      name="description"
+      content="基于已索引学习资料回答问题，并展示可核对来源。"
+    >
+    <title>智能学习资料助手</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="page-shell">
+      <section class="intro" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow">STUDY MATERIAL RAG</p>
+          <h1 id="page-title">问自己的资料，<br>得到有出处的答案。</h1>
+          <p class="lede">
+            从已经索引的 TXT、Markdown 和 PDF 中检索证据。资料不足时，助手会明确拒答。
+          </p>
+        </div>
+
+        <ul class="feature-list" aria-label="问答特点">
+          <li><span>01</span>仅基于资料</li>
+          <li><span>02</span>来源可核对</li>
+          <li><span>03</span>无证据拒答</li>
+        </ul>
+
+        <div class="api-state" id="api-state" data-state="checking" role="status">
+          <span class="state-dot" aria-hidden="true"></span>
+          <span id="api-state-text">正在检查本地 API…</span>
+        </div>
+      </section>
+
+      <section class="workspace" aria-labelledby="ask-title">
+        <header class="workspace-header">
+          <div>
+            <p class="section-kicker">ASK YOUR MATERIALS</p>
+            <h2 id="ask-title">向学习资料提问</h2>
+          </div>
+          <a href="/docs" target="_blank" rel="noreferrer">API 文档 ↗</a>
+        </header>
+
+        <section class="materials-panel" aria-labelledby="materials-title">
+          <header class="materials-header">
+            <div>
+              <p class="section-kicker">MATERIALS</p>
+              <h2 id="materials-title">上传学习资料</h2>
+            </div>
+            <p>先本地解析，再确认 Embedding 费用。</p>
+          </header>
+
+          <form id="upload-form" class="upload-form" enctype="multipart/form-data">
+            <div class="upload-fields">
+              <div>
+                <label for="material-file">资料文件</label>
+                <input
+                  id="material-file"
+                  name="file"
+                  type="file"
+                  accept=".txt,.md,.pdf,text/plain,text/markdown,application/pdf"
+                  required
+                >
+              </div>
+              <div>
+                <label for="upload-operation">操作</label>
+                <select id="upload-operation" name="operation">
+                  <option value="add">新增资料</option>
+                  <option value="replace">明确替换同名资料</option>
+                </select>
+              </div>
+            </div>
+            <div class="material-actions">
+              <button id="stage-button" class="secondary-button" type="submit">
+                本地校验与解析
+              </button>
+              <p>
+                支持 UTF-8 TXT、Markdown 和带文字层 PDF；单文件最大 10 MiB，
+                PDF 最多 200 页，预计最多 20 个 Embedding 批次。
+              </p>
+            </div>
+          </form>
+
+          <section class="web-import" aria-labelledby="web-import-title">
+            <header class="web-import-header">
+              <div>
+                <p class="section-kicker">PUBLIC WEB PAGE</p>
+                <h3 id="web-import-title">导入公开网页</h3>
+              </div>
+              <p>先安全抓取单页并查看 Markdown，确认后才写入索引。</p>
+            </header>
+
+            <form id="web-preview-form" class="web-preview-form" novalidate>
+              <div class="upload-fields">
+                <div>
+                  <label for="web-material-url">公开网页 URL</label>
+                  <input
+                    id="web-material-url"
+                    name="url"
+                    type="url"
+                    maxlength="2048"
+                    placeholder="https://example.com/course/rag"
+                    autocomplete="url"
+                    required
+                  >
+                </div>
+                <div>
+                  <label for="web-operation">操作</label>
+                  <select id="web-operation" name="operation">
+                    <option value="add">新增网页资料</option>
+                    <option value="replace">重新抓取并替换</option>
+                  </select>
+                </div>
+              </div>
+              <div class="material-actions">
+                <button id="web-preview-button" class="secondary-button" type="submit">
+                  安全抓取并生成预览
+                </button>
+                <p>
+                  只支持公开、免登录的 HTTP(S) 单页；最多 5 次重定向、2 MiB HTML、
+                  30,000 字 Markdown，不使用 Cookie、代理、Stealth 或自定义脚本。
+                </p>
+              </div>
+            </form>
+
+            <div class="web-preview" id="web-preview" hidden>
+              <div class="web-preview-heading">
+                <strong id="web-preview-title"></strong>
+                <a id="web-preview-link" target="_blank" rel="noreferrer"></a>
+              </div>
+              <p id="web-preview-meta"></p>
+              <pre id="web-preview-markdown" tabindex="0"></pre>
+            </div>
+          </section>
+
+          <div class="stage-summary" id="stage-summary" hidden>
+            <div>
+              <strong id="stage-filename"></strong>
+              <p id="stage-details"></p>
+              <p class="cost-warning" id="stage-cost"></p>
+            </div>
+            <button id="confirm-index-button" type="button">确认费用并写入索引</button>
+          </div>
+
+          <div class="material-message" id="material-message" role="status" hidden>
+            <p id="material-message-text"></p>
+            <p class="request-meta" id="material-request-meta" hidden></p>
+          </div>
+
+          <div class="material-library">
+            <h3>当前资料</h3>
+            <ul id="material-list"></ul>
+            <p class="empty-materials" id="empty-materials" hidden>当前没有资料。</p>
+          </div>
+        </section>
+
+        <form id="ask-form" class="ask-form" novalidate>
+          <label for="question">问题</label>
+          <textarea
+            id="question"
+            name="question"
+            rows="6"
+            maxlength="2000"
+            placeholder="例如：柯西分布有哪些主要特点？"
+            required
+          ></textarea>
+          <div class="input-meta">
+            <span id="char-count">0 / 2000</span>
+            <span>Ctrl + Enter 提交</span>
+          </div>
+
+          <div class="submit-row">
+            <button id="submit-button" type="submit">
+              <span id="button-label">向资料提问</span>
+              <span aria-hidden="true">→</span>
+            </button>
+            <p>
+              提交会产生 API 费用；每分钟最多 5 次，当前服务进程最多 50 次。
+            </p>
+          </div>
+        </form>
+
+        <div class="error-panel" id="error-panel" role="alert" hidden>
+          <strong>这次请求没有完成</strong>
+          <p id="error-message"></p>
+          <p class="request-meta" id="error-request-meta" hidden></p>
+        </div>
+
+        <section
+          class="result-panel"
+          id="result-panel"
+          aria-labelledby="answer-title"
+          aria-live="polite"
+          hidden
+        >
+          <header class="result-header">
+            <div>
+              <p class="section-kicker">GROUNDED ANSWER</p>
+              <h2 id="answer-title">回答</h2>
+            </div>
+            <p class="request-meta" id="request-meta"></p>
+          </header>
+
+          <p class="answer" id="answer"></p>
+
+          <div class="sources-block">
+            <h3>可核对来源</h3>
+            <ol id="sources-list"></ol>
+            <p class="empty-sources" id="empty-sources" hidden>
+              本次为无证据拒答，因此没有返回来源。
+            </p>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

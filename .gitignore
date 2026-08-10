@@ -1,0 +1,13 @@
+__pycache__/
+.venv/
+.venv-1/
+.env
+AGENTS.md
+tmp/
+data/documents/
+data/vector_store/
+data/pending_uploads/
+data/pending_deletions/
+data/request_logs/
+data/crawl4ai_runtime/
+evaluation/results/

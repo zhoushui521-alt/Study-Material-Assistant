@@ -1,0 +1,134 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "rag_chunking_reason",
+      "category": "markdown_regression",
+      "question": "学习资料为什么需要切分成较小的文本块？",
+      "expected_sources": [
+        {
+          "source": "rag-intro.md",
+          "chunk_index": 2
+        }
+      ],
+      "required_answer_terms": ["太长", "无关", "相关"],
+      "should_refuse": false
+    },
+    {
+      "id": "chroma_incremental_embedding",
+      "category": "markdown_regression",
+      "question": "资料没有变化时，为什么增量同步不需要重新调用 Embedding？",
+      "expected_sources": [
+        {
+          "source": "chroma-intro.md",
+          "chunk_index": 1
+        }
+      ],
+      "required_answer_terms": ["复用", "已有向量", "新增或修改"],
+      "should_refuse": false
+    },
+    {
+      "id": "cauchy_properties",
+      "category": "pdf_concept",
+      "question": "柯西分布有哪些主要特点？",
+      "expected_sources": [
+        {
+          "source": "第八章.pdf · 第 3 页",
+          "chunk_index": 3
+        }
+      ],
+      "required_answer_terms": ["厚尾", "均值", "方差"],
+      "should_refuse": false
+    },
+    {
+      "id": "cauchy_relationships",
+      "category": "pdf_nearby_concepts",
+      "question": "柯西分布与学生 t 分布及标准正态变量之比有什么关系？",
+      "expected_sources": [
+        {
+          "source": "第八章.pdf · 第 4 页",
+          "chunk_index": 1
+        }
+      ],
+      "required_answer_terms": ["自由度", "正态变量", "比率"],
+      "should_refuse": false
+    },
+    {
+      "id": "dirichlet_definition",
+      "category": "pdf_concept",
+      "question": "狄利克雷分布定义在什么空间，变量满足什么约束，并与多项式分布有什么关系？",
+      "expected_sources": [
+        {
+          "source": "第八章.pdf · 第 4 页",
+          "chunk_index": 6
+        }
+      ],
+      "required_answer_terms": ["非负", "和为1", "共轭先验"],
+      "should_refuse": false
+    },
+    {
+      "id": "multinomial_cross_chunk_moments",
+      "category": "pdf_cross_chunk",
+      "question": "多项式分布中，单个类别计数的边缘分布是什么？其期望、方差以及不同类别计数间的协方差分别是什么？",
+      "expected_sources": [
+        {
+          "source": "第八章.pdf · 第 13 页",
+          "chunk_index": 1
+        },
+        {
+          "source": "第八章.pdf · 第 13 页",
+          "chunk_index": 3
+        }
+      ],
+      "required_answer_terms": ["二项分布", "期望", "方差", "协方差"],
+      "should_refuse": false
+    },
+    {
+      "id": "student_t_suitability",
+      "category": "pdf_concept",
+      "question": "学生 t 分布为什么适合小样本场景，自由度有什么作用？",
+      "expected_sources": [
+        {
+          "source": "第八章.pdf · 第 14 页",
+          "chunk_index": 2
+        }
+      ],
+      "required_answer_terms": ["小样本", "异常值", "自由度"],
+      "should_refuse": false
+    },
+    {
+      "id": "wishart_definition",
+      "category": "pdf_concept",
+      "question": "威沙特分布描述什么随机量，主要用于什么问题？",
+      "expected_sources": [
+        {
+          "source": "第八章.pdf · 第 17 页",
+          "chunk_index": 4
+        }
+      ],
+      "required_answer_terms": ["样本协方差矩阵", "协方差估计"],
+      "should_refuse": false
+    },
+    {
+      "id": "inverse_wishart_definition",
+      "category": "pdf_concept",
+      "question": "逆威沙特分布与威沙特分布是什么关系，通常用在什么场景？",
+      "expected_sources": [
+        {
+          "source": "第八章.pdf · 第 20 页",
+          "chunk_index": 4
+        }
+      ],
+      "required_answer_terms": ["逆变换", "协方差矩阵", "先验"],
+      "should_refuse": false
+    },
+    {
+      "id": "mysql_out_of_scope",
+      "category": "no_evidence",
+      "question": "MySQL 的事务隔离级别有哪些？",
+      "expected_sources": [],
+      "required_answer_terms": [],
+      "should_refuse": true
+    }
+  ]
+}
