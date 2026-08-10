@@ -15,7 +15,7 @@ TXT、Markdown 和带文字层的 PDF。模型输出残留 `\phi`、`\mu` 曾导
 自动接口文档和基础请求日志；有效 `/api/ask` 已在本地 Uvicorn 中验证返回 `200`。
 Web 页面只复用现有 API，不复制检索、Prompt 或模型调用逻辑。
 
-阶段 1 到阶段 6 的代码与自动验证现已完成：Web 可以安全暂存单个 TXT、Markdown
+阶段 1 到阶段 7 的代码与自动验证现已完成：Web 可以安全暂存单个 TXT、Markdown
 或 PDF，展示本地解析结果和预计 Embedding 批次数，并在用户二次确认后复用现有
 Chroma 增量同步；同名文件默认拒绝，只有显式选择替换才会更新，删除资料时只定向
 删除对应来源的索引记录。请求元数据会持久化为有限轮转的 JSONL，已有两份评测
@@ -26,6 +26,8 @@ Chroma 增量同步；同名文件默认拒绝，只有显式选择替换才会�
 继续执行 Prompt、ChatModel、字符串解析、格式归一化和来源返回。受限 LangChain
 Agent 通过三个固定工具动态选择资料问答、资料列表或公开网页预览，不具备索引、删除、
 任意文件访问或任意网络访问工具。
+阶段 7 进一步用显式 `StateGraph` 管理学习目标、资料证据、三步任务、人工确认、
+进度和复盘；阶段 6 Agent 只作为受控的资料证据节点，不拥有整个流程控制权。
 
 上传、网页预览、替换、删除、回滚、日志轮转、报告对比和阶段 3 保护已经通过 Fake/Mock 自动
 测试。用户随后在本地页面完成了一次真实 PDF 上传、费用确认、增量索引和问答：索引
@@ -36,7 +38,8 @@ Agent 通过三个固定工具动态选择资料问答、资料列表或公开�
 Crawl4AI 转换、Fake/Mock 安全验证，以及用户在本地页面对
 `https://www.qiuzhi2046.com/` 的真实公开网页 Markdown 预览验收；该网页的付费确认
 入库和问答闭环仍未验收。阶段 6 Agent 已通过 Fake/Mock 工具选择和失败路径验证，
-但尚未调用真实工具调用模型。自定义 LangGraph 工作流仍属于后续规划。
+但尚未调用真实工具调用模型。阶段 7 LangGraph 工作流已通过 Fake/Mock 和本地 SQLite
+关闭后重开恢复测试，但同样尚未进行真实模型工作流验收。
 
 ## 运行
 
@@ -172,6 +175,14 @@ python -m uvicorn app.api:app --host 127.0.0.1 --port 8000 --no-access-log
   `{"message": "列出当前资料", "confirm_api_cost": true}`；可选
   `"allow_web_preview": true` 只授权本次请求预览用户明确提供的公开 URL；返回
   `answer`、`sources` 和 `tools_used`；
+- `POST http://127.0.0.1:8000/api/study-workflows`：请求体为
+  `{"goal": "理解 RAG 的证据约束", "confirm_api_cost": true}`；调用一次受限 Agent
+  整理资料证据、生成三步计划，并在返回前暂停等待人工确认；
+- `POST /api/study-workflows/{workflow_id}/confirm`：用
+  `{"decision": "approve"}` 或 `{"decision": "reject"}` 恢复同一检查点；
+- `POST /api/study-workflows/{workflow_id}/progress`：使用 `note` 和
+  `complete_current_task` 零模型调用地更新进度；失败工作流的 `/retry` 需要再次确认
+  API 费用且最多一次；`GET` 读取最新状态，`DELETE` 经确认后删除全部本地检查点；
 - `GET http://127.0.0.1:8000/api/materials`：零费用列出当前资料文件；
 - `POST http://127.0.0.1:8000/api/materials/stage`：以 `multipart/form-data`
   暂存并本地解析单个资料，不读取模型配置、不打开 Chroma；
@@ -199,7 +210,8 @@ Uvicorn 默认访问日志，由上述结构化日志替代。相同的安全字
 3 份备份。持久化失败不会影响 HTTP 响应，也不会把原始异常写入日志。
 
 当前错误类别包括 `request_validation`、`rate_limited`、`rag_processing`、`rag_unavailable`、
-`agent_processing`、`agent_timeout`、`agent_protected`、`web_preview`、
+`agent_processing`、`agent_timeout`、`agent_protected`、`workflow`、
+`workflow_protected`、`web_preview`、
 `web_preview_protected`、`client_error`、`server_error` 和
 `unhandled_exception`。未预期异常会返回不含内部
 异常信息的通用 `500`，并保留可与日志关联的 `X-Request-ID`；为避免敏感信息进入
@@ -219,6 +231,21 @@ Agent 执行最多等待 90 秒；已经进入同步 RAG 的外部调用仍受�
 服务端保留原始回答和来源，避免 Agent 二次改写证据；`list_available_materials` 只列
 文件名与大小；`preview_web_material` 还要求本次请求显式授权，只复用安全预览且永不
 写入索引。工具异常会转换为不含 URL、密钥、路径和原始异常的安全结果。
+
+## 阶段 7：LangGraph 学习规划工作流
+
+`app/study_workflow.py` 使用 `StateGraph` 显式定义请求路由、目标校验、Agent 资料证据、
+计划生成、人工确认、计划激活/拒绝、进度更新和最终复盘节点。创建工作流会调用阶段 6
+Agent，因此必须确认费用；图在 `interrupt()` 处暂停，确认接口使用相同 `thread_id`
+和 `Command(resume=...)` 恢复。批准后第一项任务进入 `in_progress`，每次进度调用只更新
+本地状态，三项任务完成后生成确定性复盘；拒绝后不会写入进度或继续调用模型。
+
+检查点保存在 `data/study_workflows/checkpoints.sqlite3`，由
+`langgraph-checkpoint-sqlite` 持久化，并使用禁用 pickle fallback、显式空模块白名单的
+严格序列化器。数据库被 `.gitignore` 忽略，保存目标、Agent 证据、来源、计划和进度，
+不保存服务对象、密钥或原始异常；它是未加密的本地开发数据，不应同步或公开。每条
+进度最多 100 项，失败不会自动重试付费 Agent；只有资料证据节点失败时，用户才能在
+再次确认费用后手动重试一次。`DELETE` 接口可删除指定工作流的全部检查点。
 
 Web 页面使用项目内原生 HTML、CSS 和 JavaScript，没有引入前端框架或外部资源。
 页面会展示答案、候选来源和 `X-Request-ID`，并在请求期间禁用提交按钮以降低重复
@@ -253,9 +280,9 @@ python -m pip install -r requirements.txt
 
 页面中的“导入公开网页”仍复用现有两步入库链路：
 
-1. 服务端只接受默认端口的 HTTP/HTTPS URL，解析得到的全部地址必须为公网 IP；实际
-   连接固定到本轮已校验地址，并在最多 5 次重定向中的每一跳重新做 URL、DNS 和地址
-   校验，以降低内网访问、云元数据访问、DNS 重绑定和重定向绕过风险；
+1. 服务端只接受默认端口的 HTTP/HTTPS URL，默认要求解析得到的全部地址均为公网 IP；
+   实际连接固定到本轮已校验地址，并在最多 5 次重定向中的每一跳重新做 URL、DNS 和
+   地址校验，以降低内网访问、云元数据访问、DNS 重绑定和重定向绕过风险；
 2. 单页 HTML 最大 2 MiB，HTTP 连接与读取链路共享 20 秒预算，只接受 HTML 且不接受
    压缩响应；初次 DNS 解析仍受操作系统解析器时限约束。Crawl4AI 在已安全获取的原始
    HTML 上移除脚本、表单、iframe、图片等内容并生成最多 30,000 字的 Markdown；
@@ -270,13 +297,31 @@ Cookie、登录态、代理、Stealth、自定义 Hook/脚本、批量站点爬�
 检查预览、遵守目标网站条款，并把 Prompt Injection 视为残余风险。项目使用
 [Crawl4AI](https://github.com/unclecode/crawl4ai) 完成网页 HTML 到 Markdown 的提取。
 
+如果可信本机代理使用 Fake-IP DNS，并把正常域名解析到 `198.18.0.0/15`，可以只在
+启动 Uvicorn 的当前 PowerShell 终端显式开启兼容模式：
+
+```powershell
+$env:STUDY_MATERIAL_ALLOW_PROXY_FAKE_IP="true"
+.\.venv\Scripts\python.exe -m uvicorn app.api:app --host 127.0.0.1 --port 8011 --no-access-log
+```
+
+兼容模式只允许“域名 DNS 解析结果”使用 `198.18.0.0/15`，用户直接输入该网段 IP、
+localhost、内网、链路本地和云元数据地址仍会被拒绝；初始 URL 与每次重定向使用同一
+规则。该模式依赖可信本机代理接管 Fake-IP 连接，只适用于本地开发，不得在公开部署中
+启用。关闭当前终端即可清除该进程环境变量，也可以执行：
+
+```powershell
+Remove-Item Env:STUDY_MATERIAL_ALLOW_PROXY_FAKE_IP
+```
+
 ## 阶段 3：稳定性与安全保护
 
-本地单进程使用一个非阻塞独占保护器协调问答、Agent、网页预览、暂存、索引和删除：已有受保护操作
+本地单进程使用一个非阻塞独占保护器协调问答、Agent、学习工作流、网页预览、暂存、索引和删除：已有受保护操作
 执行时，新操作立即返回 `429`，不会无限排队。滚动窗口和费用保护默认值为：
 
 - 问答每 60 秒最多 5 次、当前进程最多 50 次；
 - Agent 每 60 秒最多 3 次、当前进程最多 20 次；
+- 零模型的工作流确认、进度和删除合计每 60 秒最多 10 次；
 - 索引每小时最多确认 5 次；调用 Embedding 前会按 Chroma 现有 ID 重新计算实际待新增
   文本块，单次最多 20 个逻辑批次、当前进程最多 100 批；
 - 本地暂存和删除各每 60 秒最多 10 次；
@@ -318,7 +363,7 @@ python -m app.compare_rag_reports <基线报告.json> <当前报告.json> --outp
 出现新增失败时退出码为 `1`；输入或写入错误为 `2`。若两份评测集 SHA-256 不同，
 报告会明确警告总通过率不能直接比较。
 
-当前 API 已覆盖本地问答、受限 Agent、上传与增量索引、资料删除、有限请求历史和单进程保护，但
+当前 API 已覆盖本地问答、受限 Agent、可恢复学习工作流、上传与增量索引、资料删除、有限请求历史和单进程保护，但
 仍未实现鉴权、跨进程/跨实例配额和公开服务所需的完整并发性能基线，不应直接作为
 公网生产服务部署。
 
@@ -336,10 +381,9 @@ node --check web\static\app.js
 ## 后续开发阶段清单
 
 以下状态以当前工作区代码、自动测试、已有真实评测报告和用户提供的本地运行
-截图为准。显式 LCEL 固定问答管道、受限 Crawl4AI 网页预览和单个受限 LangChain Agent
-已经实现。`create_agent` 内部会编译执行图，但当前项目没有直接声明 LangGraph 依赖，
-也没有自定义 `StateGraph`、持久化检查点、人工中断或学习规划工作流。LCEL 只重组
-固定问答流程；动态工具选择属于阶段 6 Agent，不能描述为有状态业务工作流。
+截图为准。显式 LCEL 固定问答管道、受限 Crawl4AI 网页预览、单个受限 LangChain Agent
+和自定义 LangGraph 学习规划工作流已经实现。LCEL 只重组固定问答流程；动态工具选择
+属于阶段 6 Agent；状态、条件路由、持久化检查点和人工中断属于阶段 7 LangGraph。
 
 状态标记：
 
@@ -366,13 +410,13 @@ node --check web\static\app.js
 | **当前已完成 12：阶段 4 LCEL 管道化 RAG** | 将“问题 → 检索 → 证据判断 → Prompt → 模型 → 结果处理”组合为可复用 Runnable，并保留混合检索、拒答、归一化和来源契约。 | CLI 与 FastAPI 经 `RAGService` 复用同一管道；Fake/Mock 验证成功、拒答、检索失败、模型失败和无证据时跳过 ChatModel。 | 本阶段未调用付费 API；此前真实 10/10 评测早于本次 LCEL 改造，不能作为改造后的真实效果证据。 |
 | **当前已完成 13：阶段 5 Crawl4AI 网页资料导入** | 公网 URL/DNS/每跳重定向校验；固定到已验证 IP 的受控单页抓取；Crawl4AI 本地 Markdown 预览；来源元数据；复用现有暂存与确认索引链路。 | Fake/Mock 覆盖 SSRF、重定向、超限、错误映射和隐私日志；本地原始 HTML 已实际通过 Crawl4AI 清理转换，API/UI 契约已自动验证；用户已在本地页面完成 `qiuzhi2046.com` 的真实公开网页 Markdown 预览。 | 真实网页付费入库与问答仍未验收；不支持 JavaScript 渲染、登录态或批量爬取。部分代理/Fake-IP DNS 环境会把域名映射到保留测试网段并被 SSRF 保护正确拒绝。 |
 | **当前已完成 14：阶段 6 LangChain Agent 工具编排** | 使用 `create_agent` 编排 `answer_from_materials`、`list_available_materials` 和 `preview_web_material` 三个受限工具；提供 `/api/agent`、单次费用确认、网页预览独立授权、模型/工具/总时限和单进程预算。 | Fake/Mock 验证工具选择、LCEL 回答与来源逐字保留、网页预览不入库、未授权拒绝、工具异常脱敏、重复付费工具限制、超时和 API 错误契约。 | 尚未调用真实工具调用模型，不能把自动测试当作真实 Agent 效果验收；没有索引、删除、任意文件或任意网络工具，也没有对话记忆和自定义 LangGraph 状态流。 |
+| **当前已完成 15：阶段 7 LangGraph 学习规划工作流** | 用显式 `StateGraph` 管理目标、受控 Agent 证据节点、三步计划、`interrupt` 确认、批准/拒绝分支、进度、复盘、一次手动重试和 SQLite 检查点删除。 | Fake/Mock 覆盖完整状态流、路由原因、费用确认、拒绝后停止、进度上限和隐私日志；真实 SQLite 文件关闭并重开后可以读取并恢复等待确认的线程。 | 尚未调用真实模型验收工作流效果；检查点是未加密的本地单实例数据，没有鉴权、跨实例锁、后台清理或任意对话长期记忆。 |
 
 ### 下一阶段与后续阶段
 
 | 阶段 | 主要内容 | 完成标志 | 与前一阶段的依赖 / 核心风险与边界 |
 | --- | --- | --- | --- |
-| **阶段 7（下一阶段）：LangGraph 学习规划工作流** | 使用 `StateGraph` 明确定义 State、Nodes 和 Edges；支持学习目标、任务拆解、资料检索与引用、用户确认、进度状态、阶段复盘、条件分支、有限重试和状态恢复；将 Agent 作为受控节点或子图，而不是交出全部流程控制权。 | 展示“学习目标 → 任务拆解 → 资料检索 → 用户确认 → 进度更新”的完整状态流；中断后可从已有状态恢复；每次状态变化和路由原因可解释；人工拒绝后不会继续写入或调用付费能力。 | 依赖阶段 6 的受控工具边界；生成学习计划、批量导入网页或修改进度前设置人工确认节点，并使用可持久化检查点支持中断恢复。第一版只做单 Agent 或少量受控节点，不为展示技术栈构建复杂多 Agent 系统。 |
-| **阶段 8（后续阶段）：部署** | 管理环境变量和启动配置、持久化目录、健康检查，并选择 Docker 或合适平台；区分 FastAPI 服务、Chroma 数据和网页抓取运行资源。 | 获得可公开访问的演示地址；重启后资料索引和必要状态不丢失；健康检查不调用模型或产生费用。 | 当前原始 HTML 转换不启动浏览器；若未来增加 JavaScript 渲染，部署前还要验证 Playwright/Chromium 的内存、启动时间和运行资源。公开服务还需要鉴权、限流和费用上限。 |
+| **阶段 8（下一阶段）：部署** | 管理环境变量和启动配置、持久化目录、健康检查，并选择 Docker 或合适平台；区分 FastAPI 服务、Chroma 数据、LangGraph SQLite 检查点和网页抓取运行资源。 | 获得可公开访问的演示地址；重启后资料索引和必要状态不丢失；健康检查不调用模型或产生费用。 | 当前原始 HTML 转换不启动浏览器；公开服务还需要鉴权、跨实例配额、数据库并发方案、检查点加密/备份和完整性能基线。 |
 | **阶段 9（后续阶段）：演示和求职材料** | 补充 README 架构图和完整运行步骤，说明 RAG、LCEL、Crawl4AI、Agent 和 LangGraph 的职责边界；整理评测证据、典型问题、拒答案例、故障定位案例、演示视频和项目讲解。 | 项目可以写入简历；能在面试中讲清需求、架构、取舍、验证和风险；明确区分已实现、已自动化验证、已真实运行和后续规划。 | 依赖部署与证据归档；不得把固定评测案例、原型能力或未上线功能包装成普遍稳定的生产成果。 |
 
 排序遵循“先稳定资料进入和可观测性，再重组固定 RAG 管道，随后增加网页采集和

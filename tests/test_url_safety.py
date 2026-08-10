@@ -1,6 +1,12 @@
 import unittest
+from unittest.mock import patch
 
-from app.url_safety import UnsafeURLError, validate_public_http_url
+from app.url_safety import (
+    PROXY_FAKE_IP_ENV,
+    UnsafeURLError,
+    proxy_fake_ip_compatibility_enabled,
+    validate_public_http_url,
+)
 
 
 class URLSafetyTests(unittest.TestCase):
@@ -62,6 +68,43 @@ class URLSafetyTests(unittest.TestCase):
                 "https://example.com/",
                 resolver=lambda host, port: ("8.8.8.8", "127.0.0.1"),
             )
+
+    def test_fake_ip_compatibility_is_explicit_and_domain_only(self) -> None:
+        with self.assertRaisesRegex(UnsafeURLError, "公网 IP"):
+            validate_public_http_url(
+                "https://example.com/",
+                resolver=lambda host, port: ("198.18.0.42",),
+            )
+
+        result = validate_public_http_url(
+            "https://example.com/",
+            resolver=lambda host, port: ("198.18.0.42",),
+            allow_proxy_fake_ip=True,
+        )
+
+        self.assertEqual(result.resolved_addresses, ("198.18.0.42",))
+        with self.assertRaisesRegex(UnsafeURLError, "公网 IP"):
+            validate_public_http_url(
+                "http://198.18.0.42/",
+                allow_proxy_fake_ip=True,
+            )
+
+    def test_fake_ip_compatibility_still_rejects_mixed_private_dns(self) -> None:
+        with self.assertRaisesRegex(UnsafeURLError, "公网 IP"):
+            validate_public_http_url(
+                "https://example.com/",
+                resolver=lambda host, port: ("198.18.0.42", "127.0.0.1"),
+                allow_proxy_fake_ip=True,
+            )
+
+    def test_fake_ip_process_switch_is_strict_and_defaults_off(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertFalse(proxy_fake_ip_compatibility_enabled())
+        with patch.dict("os.environ", {PROXY_FAKE_IP_ENV: "true"}, clear=True):
+            self.assertTrue(proxy_fake_ip_compatibility_enabled())
+        with patch.dict("os.environ", {PROXY_FAKE_IP_ENV: "invalid"}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, PROXY_FAKE_IP_ENV):
+                proxy_fake_ip_compatibility_enabled()
 
     def test_rejects_domain_without_addresses(self) -> None:
         with self.assertRaisesRegex(UnsafeURLError, "没有可用"):

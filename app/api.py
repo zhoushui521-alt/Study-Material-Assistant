@@ -10,7 +10,7 @@ from pathlib import Path
 from threading import Lock
 from time import perf_counter
 from typing import Annotated, AsyncIterator, Literal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import (
     Depends,
@@ -59,7 +59,18 @@ from app.rag_service import (
     create_rag_service,
 )
 from app.request_history import RequestHistoryError, RequestHistoryWriter
-from app.url_safety import UnsafeURLError
+from app.study_workflow import (
+    WORKFLOW_MAX_GOAL_LENGTH,
+    WORKFLOW_MAX_PROGRESS_NOTE_LENGTH,
+    ApprovalDecision,
+    StudyWorkflowConflictError,
+    StudyWorkflowNotFoundError,
+    StudyWorkflowResult,
+    StudyWorkflowService,
+    WorkflowStatus,
+    open_sqlite_study_workflow_service,
+)
+from app.url_safety import UnsafeURLError, proxy_fake_ip_compatibility_enabled
 from app.web_materials import (
     WebMaterialConversionError,
     WebMaterialFetchError,
@@ -86,6 +97,7 @@ SECURITY_RESPONSE_HEADERS = {
     "X-Content-Type-Options": "nosniff",
 }
 _service_lock = Lock()
+_workflow_service_lock = asyncio.Lock()
 request_logger = logging.getLogger("uvicorn.error")
 
 
@@ -132,6 +144,81 @@ class AgentResponse(BaseModel):
     answer: str
     sources: list[str]
     tools_used: list[str]
+
+
+class StudyWorkflowStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    goal: str = Field(min_length=1, max_length=WORKFLOW_MAX_GOAL_LENGTH)
+    confirm_api_cost: Literal[True]
+
+    @field_validator("goal")
+    @classmethod
+    def strip_and_validate_goal(cls, value: str) -> str:
+        goal = value.strip()
+        if not goal:
+            raise ValueError("学习目标不能为空。")
+        return goal
+
+
+class StudyWorkflowConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: ApprovalDecision
+
+
+class StudyWorkflowProgressRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    note: str = Field(min_length=1, max_length=WORKFLOW_MAX_PROGRESS_NOTE_LENGTH)
+    complete_current_task: bool
+
+    @field_validator("note")
+    @classmethod
+    def strip_and_validate_note(cls, value: str) -> str:
+        note = value.strip()
+        if not note:
+            raise ValueError("进度记录不能为空。")
+        return note
+
+
+class StudyWorkflowRetryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirm_api_cost: Literal[True]
+
+
+class StudyWorkflowDeleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirm_delete: Literal[True]
+
+
+class StudyWorkflowTaskResponse(BaseModel):
+    id: str
+    title: str
+    status: Literal["pending", "in_progress", "completed"]
+
+
+class StudyWorkflowResponse(BaseModel):
+    workflow_id: str
+    goal: str
+    status: WorkflowStatus
+    evidence_summary: str
+    sources: list[str]
+    tasks: list[StudyWorkflowTaskResponse]
+    current_task_index: int
+    progress_history: list[str]
+    retry_count: int
+    review: str
+    route_trace: list[str]
+    error: str
+    approval_required: bool
+
+
+class StudyWorkflowDeleteResponse(BaseModel):
+    workflow_id: str
+    status: Literal["deleted"] = "deleted"
 
 
 class StagedMaterialResponse(BaseModel):
@@ -236,6 +323,19 @@ async def lifespan(api: FastAPI) -> AsyncIterator[None]:
                 )
         yield
     finally:
+        workflow_service = getattr(api.state, "study_workflow_service", None)
+        if workflow_service is not None:
+            try:
+                await workflow_service.close()
+            except Exception:
+                request_logger.error(
+                    json.dumps(
+                        {"event": "study_workflow_service_cleanup_failed"},
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                )
+        api.state.study_workflow_service = None
         service = getattr(api.state, "rag_service", None)
         try:
             if service is not None:
@@ -252,6 +352,7 @@ app = FastAPI(
 )
 app.state.rag_service = None
 app.state.agent_service = None
+app.state.study_workflow_service = None
 app.state.material_manager = MaterialManager()
 app.state.request_history_writer = RequestHistoryWriter()
 app.state.operation_guard = OperationGuard()
@@ -426,7 +527,7 @@ def get_agent_service(request: Request) -> AgentService:
             service = create_agent_service(
                 rag_service,
                 request.app.state.material_manager,
-                WebMaterialService(request.app.state.material_manager),
+                get_web_material_service(request),
             )
             request.app.state.agent_service = service
             return service
@@ -435,6 +536,19 @@ def get_agent_service(request: Request) -> AgentService:
 def get_agent_service_provider(request: Request) -> Callable[[], AgentService]:
     """返回惰性 Agent 获取器，确保无效或未确认费用的请求不会初始化模型。"""
     return lambda: get_agent_service(request)
+
+
+async def get_study_workflow_service(request: Request) -> StudyWorkflowService:
+    """按需打开本地 SQLite checkpointer，不初始化 RAG 或模型。"""
+    service = getattr(request.app.state, "study_workflow_service", None)
+    if service is not None:
+        return service
+    async with _workflow_service_lock:
+        service = getattr(request.app.state, "study_workflow_service", None)
+        if service is None:
+            service = await open_sqlite_study_workflow_service()
+            request.app.state.study_workflow_service = service
+        return service
 
 
 def get_material_manager(request: Request) -> MaterialManager:
@@ -449,7 +563,10 @@ def get_operation_guard(request: Request) -> OperationGuard:
 
 def get_web_material_service(request: Request) -> WebMaterialService:
     """基于当前资料管理器构造轻量网页预览服务。"""
-    return WebMaterialService(request.app.state.material_manager)
+    return WebMaterialService(
+        request.app.state.material_manager,
+        allow_proxy_fake_ip=proxy_fake_ip_compatibility_enabled(),
+    )
 
 
 def invalidate_rag_service(api: FastAPI) -> None:
@@ -541,6 +658,39 @@ def raise_web_material_http_error(error: Exception) -> None:
             detail="公开网页抓取失败。",
         ) from error
     raise error
+
+
+def raise_study_workflow_http_error(error: Exception) -> None:
+    """映射工作流状态错误，不泄露检查点路径、正文或内部异常。"""
+    if isinstance(error, StudyWorkflowNotFoundError):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="学习工作流不存在。",
+        ) from error
+    if isinstance(error, StudyWorkflowConflictError):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="当前学习工作流状态不允许此操作。",
+        ) from error
+    raise error
+
+
+def study_workflow_response(result: StudyWorkflowResult) -> StudyWorkflowResponse:
+    return StudyWorkflowResponse(
+        workflow_id=result.workflow_id,
+        goal=result.goal,
+        status=result.status,
+        evidence_summary=result.evidence_summary,
+        sources=list(result.sources),
+        tasks=[StudyWorkflowTaskResponse(**task) for task in result.tasks],
+        current_task_index=result.current_task_index,
+        progress_history=list(result.progress_history),
+        retry_count=result.retry_count,
+        review=result.review,
+        route_trace=list(result.route_trace),
+        error=result.error,
+        approval_required=result.approval_required,
+    )
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -808,6 +958,196 @@ async def run_agent(
         sources=list(result.sources),
         tools_used=list(result.tools_used),
     )
+
+
+@app.post(
+    "/api/study-workflows",
+    response_model=StudyWorkflowResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def start_study_workflow(
+    payload: StudyWorkflowStartRequest,
+    request: Request,
+    workflow_service: Annotated[
+        StudyWorkflowService,
+        Depends(get_study_workflow_service),
+    ],
+    guard: Annotated[OperationGuard, Depends(get_operation_guard)],
+    agent_service_provider: Annotated[
+        Callable[[], AgentService],
+        Depends(get_agent_service_provider),
+    ],
+) -> StudyWorkflowResponse:
+    """确认费用后创建学习计划，并在写入进度前暂停等待人工确认。"""
+    try:
+        with guard.acquire("agent", units=1):
+            agent_service = await asyncio.to_thread(agent_service_provider)
+            result = await workflow_service.start(
+                str(uuid4()),
+                payload.goal,
+                agent_service=agent_service,
+            )
+    except OperationProtectionError as error:
+        request.state.error_category = "workflow_protected"
+        raise_operation_http_error(error)
+        raise
+    except Exception as error:
+        request.state.error_category = "workflow"
+        raise_study_workflow_http_error(error)
+        raise
+    return study_workflow_response(result)
+
+
+@app.post(
+    "/api/study-workflows/{workflow_id}/confirm",
+    response_model=StudyWorkflowResponse,
+)
+async def confirm_study_workflow(
+    workflow_id: UUID,
+    payload: StudyWorkflowConfirmRequest,
+    request: Request,
+    workflow_service: Annotated[
+        StudyWorkflowService,
+        Depends(get_study_workflow_service),
+    ],
+    guard: Annotated[OperationGuard, Depends(get_operation_guard)],
+) -> StudyWorkflowResponse:
+    """用同一 thread_id 恢复 interrupt，并按批准或拒绝分支继续。"""
+    try:
+        with guard.acquire("workflow"):
+            result = await workflow_service.confirm(str(workflow_id), payload.decision)
+    except OperationProtectionError as error:
+        request.state.error_category = "workflow_protected"
+        raise_operation_http_error(error)
+        raise
+    except Exception as error:
+        request.state.error_category = "workflow"
+        raise_study_workflow_http_error(error)
+        raise
+    return study_workflow_response(result)
+
+
+@app.post(
+    "/api/study-workflows/{workflow_id}/progress",
+    response_model=StudyWorkflowResponse,
+)
+async def update_study_workflow_progress(
+    workflow_id: UUID,
+    payload: StudyWorkflowProgressRequest,
+    request: Request,
+    workflow_service: Annotated[
+        StudyWorkflowService,
+        Depends(get_study_workflow_service),
+    ],
+    guard: Annotated[OperationGuard, Depends(get_operation_guard)],
+) -> StudyWorkflowResponse:
+    """零模型调用记录当前任务进度，并在全部完成后生成确定性复盘。"""
+    try:
+        with guard.acquire("workflow"):
+            result = await workflow_service.record_progress(
+                str(workflow_id),
+                payload.note,
+                complete_current_task=payload.complete_current_task,
+            )
+    except OperationProtectionError as error:
+        request.state.error_category = "workflow_protected"
+        raise_operation_http_error(error)
+        raise
+    except Exception as error:
+        request.state.error_category = "workflow"
+        raise_study_workflow_http_error(error)
+        raise
+    return study_workflow_response(result)
+
+
+@app.post(
+    "/api/study-workflows/{workflow_id}/retry",
+    response_model=StudyWorkflowResponse,
+)
+async def retry_study_workflow(
+    workflow_id: UUID,
+    payload: StudyWorkflowRetryRequest,
+    request: Request,
+    workflow_service: Annotated[
+        StudyWorkflowService,
+        Depends(get_study_workflow_service),
+    ],
+    guard: Annotated[OperationGuard, Depends(get_operation_guard)],
+    agent_service_provider: Annotated[
+        Callable[[], AgentService],
+        Depends(get_agent_service_provider),
+    ],
+) -> StudyWorkflowResponse:
+    """再次确认费用后执行唯一一次手动 Agent 重试。"""
+    try:
+        with guard.acquire("agent", units=1):
+            await workflow_service.assert_retryable(str(workflow_id))
+            agent_service = await asyncio.to_thread(agent_service_provider)
+            result = await workflow_service.retry(
+                str(workflow_id),
+                agent_service=agent_service,
+            )
+    except OperationProtectionError as error:
+        request.state.error_category = "workflow_protected"
+        raise_operation_http_error(error)
+        raise
+    except Exception as error:
+        request.state.error_category = "workflow"
+        raise_study_workflow_http_error(error)
+        raise
+    return study_workflow_response(result)
+
+
+@app.get(
+    "/api/study-workflows/{workflow_id}",
+    response_model=StudyWorkflowResponse,
+)
+async def get_study_workflow(
+    workflow_id: UUID,
+    request: Request,
+    workflow_service: Annotated[
+        StudyWorkflowService,
+        Depends(get_study_workflow_service),
+    ],
+) -> StudyWorkflowResponse:
+    """零模型调用读取指定 thread_id 的最新持久化状态。"""
+    try:
+        result = await workflow_service.get(str(workflow_id))
+    except Exception as error:
+        request.state.error_category = "workflow"
+        raise_study_workflow_http_error(error)
+        raise
+    return study_workflow_response(result)
+
+
+@app.delete(
+    "/api/study-workflows/{workflow_id}",
+    response_model=StudyWorkflowDeleteResponse,
+)
+async def delete_study_workflow(
+    workflow_id: UUID,
+    payload: StudyWorkflowDeleteRequest,
+    request: Request,
+    workflow_service: Annotated[
+        StudyWorkflowService,
+        Depends(get_study_workflow_service),
+    ],
+    guard: Annotated[OperationGuard, Depends(get_operation_guard)],
+) -> StudyWorkflowDeleteResponse:
+    """经显式确认删除一个工作流的全部本地检查点。"""
+    del payload
+    try:
+        with guard.acquire("workflow"):
+            await workflow_service.delete(str(workflow_id))
+    except OperationProtectionError as error:
+        request.state.error_category = "workflow_protected"
+        raise_operation_http_error(error)
+        raise
+    except Exception as error:
+        request.state.error_category = "workflow"
+        raise_study_workflow_http_error(error)
+        raise
+    return StudyWorkflowDeleteResponse(workflow_id=str(workflow_id))
 
 
 @app.get(

@@ -264,6 +264,7 @@ def safe_fetch_public_html(
     *,
     resolver: Resolver = resolve_host_addresses,
     fetch_once: FetchOnce = fetch_once_from_validated_target,
+    allow_proxy_fake_ip: bool = False,
     max_redirects: int = MAX_WEB_REDIRECTS,
     max_response_bytes: int = MAX_WEB_RESPONSE_BYTES,
     timeout_seconds: float = WEB_FETCH_TIMEOUT_SECONDS,
@@ -272,7 +273,11 @@ def safe_fetch_public_html(
     """受控获取单页 HTML；每个重定向目标都重新解析并校验。"""
     if max_redirects < 0 or max_response_bytes <= 0 or timeout_seconds <= 0:
         raise ValueError("网页抓取限制必须有效。")
-    current = validate_public_http_url(raw_url, resolver=resolver)
+    current = validate_public_http_url(
+        raw_url,
+        resolver=resolver,
+        allow_proxy_fake_ip=allow_proxy_fake_ip,
+    )
     requested_url = current.canonical_url
     seen_urls = {current.canonical_url}
     deadline = clock() + timeout_seconds
@@ -289,7 +294,11 @@ def safe_fetch_public_html(
             if not location:
                 raise WebMaterialValidationError("网页重定向缺少目标地址。")
             redirected_url = urljoin(current.canonical_url, location)
-            current = validate_public_http_url(redirected_url, resolver=resolver)
+            current = validate_public_http_url(
+                redirected_url,
+                resolver=resolver,
+                allow_proxy_fake_ip=allow_proxy_fake_ip,
+            )
             if current.canonical_url in seen_urls:
                 raise WebMaterialValidationError("网页重定向形成循环。")
             seen_urls.add(current.canonical_url)
@@ -399,12 +408,20 @@ class WebMaterialService:
         self,
         material_manager: MaterialManager,
         *,
-        fetch_html: Callable[[str], FetchedHTML] = safe_fetch_public_html,
+        fetch_html: Callable[[str], FetchedHTML] | None = None,
+        allow_proxy_fake_ip: bool = False,
         convert_html: MarkdownConverter = crawl4ai_markdown,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._material_manager = material_manager
-        self._fetch_html = fetch_html
+        self._fetch_html = (
+            fetch_html
+            if fetch_html is not None
+            else lambda raw_url: safe_fetch_public_html(
+                raw_url,
+                allow_proxy_fake_ip=allow_proxy_fake_ip,
+            )
+        )
         self._convert_html = convert_html
         self._now = now
 

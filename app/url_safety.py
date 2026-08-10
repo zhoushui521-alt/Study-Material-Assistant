@@ -1,14 +1,19 @@
 """网页资料导入使用的公网 HTTP(S) URL 安全校验。"""
 
+import os
 import socket
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from ipaddress import IPv4Address, IPv6Address, ip_address
+from ipaddress import IPv4Address, IPv6Address, ip_address, ip_network
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 
 MAX_URL_LENGTH = 2048
 ALLOWED_PORTS = {"http": 80, "https": 443}
+PROXY_FAKE_IP_ENV = "STUDY_MATERIAL_ALLOW_PROXY_FAKE_IP"
+PROXY_FAKE_IP_NETWORK = ip_network("198.18.0.0/15")
+TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
+FALSE_ENV_VALUES = {"", "0", "false", "no", "off"}
 Resolver = Callable[[str, int], Iterable[str]]
 
 
@@ -45,11 +50,29 @@ def _parse_address(value: str) -> IPv4Address | IPv6Address:
         raise UnsafeURLError("URL 域名解析结果包含无效 IP 地址。") from error
 
 
-def _require_global_address(value: str) -> str:
+def proxy_fake_ip_compatibility_enabled() -> bool:
+    """读取非敏感进程开关；无配置时保持严格公网校验。"""
+    raw_value = os.environ.get(PROXY_FAKE_IP_ENV, "").strip().casefold()
+    if raw_value in TRUE_ENV_VALUES:
+        return True
+    if raw_value in FALSE_ENV_VALUES:
+        return False
+    raise RuntimeError(
+        f"环境变量 {PROXY_FAKE_IP_ENV} 只能使用 true/false、1/0、yes/no 或 on/off。"
+    )
+
+
+def _require_allowed_address(value: str, *, allow_proxy_fake_ip: bool = False) -> str:
     address = _parse_address(value)
-    if not address.is_global:
-        raise UnsafeURLError("URL 只能解析到公网 IP 地址。")
-    return address.compressed
+    if address.is_global:
+        return address.compressed
+    if (
+        allow_proxy_fake_ip
+        and isinstance(address, IPv4Address)
+        and address in PROXY_FAKE_IP_NETWORK
+    ):
+        return address.compressed
+    raise UnsafeURLError("URL 只能解析到公网 IP 地址。")
 
 
 def _canonical_netloc(hostname: str, port: int, scheme: str) -> str:
@@ -61,8 +84,9 @@ def validate_public_http_url(
     raw_url: str,
     *,
     resolver: Resolver = resolve_host_addresses,
+    allow_proxy_fake_ip: bool = False,
 ) -> ValidatedPublicURL:
-    """校验一个 URL；抓取器会对初始地址和每次重定向目标调用本函数。"""
+    """校验 URL；可显式兼容域名解析得到的本地代理 Fake-IP。"""
     if not isinstance(raw_url, str) or not raw_url or raw_url != raw_url.strip():
         raise UnsafeURLError("URL 不能为空或包含首尾空白。")
     if len(raw_url) > MAX_URL_LENGTH:
@@ -107,10 +131,21 @@ def validate_public_http_url(
         resolved = tuple(resolver(canonical_hostname, port))
         if not resolved:
             raise UnsafeURLError("URL 域名没有可用的 A 或 AAAA 地址。")
-        safe_addresses = tuple(sorted({_require_global_address(value) for value in resolved}))
+        safe_addresses = tuple(
+            sorted(
+                {
+                    _require_allowed_address(
+                        value,
+                        allow_proxy_fake_ip=allow_proxy_fake_ip,
+                    )
+                    for value in resolved
+                }
+            )
+        )
     else:
         canonical_hostname = literal_address.compressed
-        safe_addresses = (_require_global_address(canonical_hostname),)
+        # 兼容模式只信任 DNS 为域名返回的 Fake-IP，不接受用户直接输入保留地址。
+        safe_addresses = (_require_allowed_address(canonical_hostname),)
 
     canonical_url = urlunsplit(
         (

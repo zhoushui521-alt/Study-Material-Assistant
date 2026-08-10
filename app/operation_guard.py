@@ -26,6 +26,8 @@ from app.security_limits import (
     STAGE_WINDOW_SECONDS,
     WEB_PREVIEW_MAX_CALLS_PER_WINDOW,
     WEB_PREVIEW_WINDOW_SECONDS,
+    WORKFLOW_MAX_CALLS_PER_WINDOW,
+    WORKFLOW_WINDOW_SECONDS,
 )
 
 
@@ -36,6 +38,7 @@ OperationName = Literal[
     "stage",
     "delete",
     "web_preview",
+    "workflow",
 ]
 
 
@@ -77,6 +80,10 @@ DEFAULT_OPERATION_POLICIES: Mapping[OperationName, OperationPolicy] = {
     "web_preview": OperationPolicy(
         window_seconds=WEB_PREVIEW_WINDOW_SECONDS,
         max_calls_per_window=WEB_PREVIEW_MAX_CALLS_PER_WINDOW,
+    ),
+    "workflow": OperationPolicy(
+        window_seconds=WORKFLOW_WINDOW_SECONDS,
+        max_calls_per_window=WORKFLOW_MAX_CALLS_PER_WINDOW,
     ),
 }
 

@@ -86,6 +86,37 @@ class WebMaterialsTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    def test_fake_ip_compatibility_is_applied_to_every_redirect(self) -> None:
+        calls: list[str] = []
+
+        def fake_ip_resolver(hostname: str, port: int) -> tuple[str, ...]:
+            del port
+            calls.append(hostname)
+            return ("198.18.0.42",)
+
+        def fetch_once(target, timeout, max_response_bytes):
+            del timeout, max_response_bytes
+            if target.hostname == "example.com":
+                return HTTPFetchResult(
+                    status_code=302,
+                    headers={"location": "https://docs.example.org/rag"},
+                )
+            return HTTPFetchResult(
+                status_code=200,
+                headers={"content-type": "text/html"},
+                html="<html><body>RAG</body></html>",
+            )
+
+        fetched = safe_fetch_public_html(
+            "https://example.com/start",
+            resolver=fake_ip_resolver,
+            fetch_once=fetch_once,
+            allow_proxy_fake_ip=True,
+        )
+
+        self.assertEqual(fetched.canonical_url, "https://docs.example.org/rag")
+        self.assertEqual(calls, ["example.com", "docs.example.org"])
+
     def test_rejects_private_redirect_before_second_request(self) -> None:
         calls = []
 

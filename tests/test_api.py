@@ -61,6 +61,26 @@ class APITests(unittest.TestCase):
         self.assertEqual(response.json(), {"status": "ok"})
         create_service.assert_not_called()
 
+    def test_web_material_service_receives_fake_ip_compatibility_switch(self) -> None:
+        request = Mock()
+        manager = Mock(spec=MaterialManager)
+        request.app.state.material_manager = manager
+
+        with (
+            patch(
+                "app.api.proxy_fake_ip_compatibility_enabled",
+                return_value=True,
+            ),
+            patch("app.api.WebMaterialService") as service_class,
+        ):
+            service = get_web_material_service(request)
+
+        service_class.assert_called_once_with(
+            manager,
+            allow_proxy_fake_ip=True,
+        )
+        self.assertIs(service, service_class.return_value)
+
     def test_docs_are_available_without_initializing_rag(self) -> None:
         with patch("app.api.create_rag_service") as create_service:
             with TestClient(app) as client:
