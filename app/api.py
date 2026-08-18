@@ -119,9 +119,23 @@ class AskRequest(BaseModel):
         return question
 
 
+class CitationResponse(BaseModel):
+    citation_id: str
+    evidence_id: str
+    material_id: str
+    chunk_id: str
+    source: str
+    filename: str
+    page: int | None
+    chunk_index: int
+    excerpt: str
+    locator: str
+
+
 class AskResponse(BaseModel):
     answer: str
     sources: list[str]
+    citations: list[CitationResponse]
 
 
 class AgentRequest(BaseModel):
@@ -915,6 +929,21 @@ def ask_documents(
     return AskResponse(
         answer=result.answer,
         sources=[source_label(document) for document in result.sources],
+        citations=[
+            CitationResponse(
+                citation_id=citation.citation_id,
+                evidence_id=citation.evidence_id,
+                material_id=citation.material_id,
+                chunk_id=citation.chunk_id,
+                source=citation.source,
+                filename=citation.filename,
+                page=citation.page,
+                chunk_index=citation.chunk_index,
+                excerpt=citation.excerpt,
+                locator=citation.locator,
+            )
+            for citation in result.citations
+        ],
     )
 
 

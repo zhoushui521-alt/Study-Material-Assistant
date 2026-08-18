@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch
 from langchain_core.documents import Document
 
 from app.langchain_rag import RAGAnswer
+from app.index_manifest import IndexCompatibilityStatus
 from app.rag_service import (
     ADJACENT_WINDOW,
     CONTEXT_LIMIT,
@@ -16,6 +17,10 @@ from app.rag_service import (
 
 
 class RAGServiceTests(unittest.TestCase):
+    @patch(
+        "app.rag_service.check_index_compatibility",
+        return_value=IndexCompatibilityStatus.COMPATIBLE,
+    )
     @patch("app.rag_service.HybridRetriever")
     @patch("app.rag_service.create_langchain_chat_model")
     @patch("app.rag_service.ChatConfig.from_environment")
@@ -30,6 +35,7 @@ class RAGServiceTests(unittest.TestCase):
         chat_config_from_environment: Mock,
         create_chat_model: Mock,
         hybrid_retriever: Mock,
+        check_index_compatibility: Mock,
     ) -> None:
         vector_store = Mock()
         vector_store.get.return_value = {"ids": ["document-id"]}
@@ -56,6 +62,8 @@ class RAGServiceTests(unittest.TestCase):
         self.assertIs(service.vector_store, vector_store)
         self.assertIs(service.retriever, hybrid_retriever.return_value)
         self.assertIsNotNone(service.rag_chain)
+        self.assertEqual(service.index_status, IndexCompatibilityStatus.COMPATIBLE)
+        check_index_compatibility.assert_called_once()
 
     @patch("app.rag_service.open_vector_store")
     @patch("app.rag_service.create_langchain_embeddings")

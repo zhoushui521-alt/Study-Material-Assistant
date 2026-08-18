@@ -14,6 +14,7 @@ from app.hybrid_search import HybridRetriever, expand_adjacent_documents
 from app.langchain_rag import (
     NO_EVIDENCE_ANSWER,
     NO_EVIDENCE_TOKEN,
+    InvalidCitationError,
     LangChainRAGError,
     answer_with_retriever,
     create_rag_chain,
@@ -47,14 +48,17 @@ class LangChainRAGTests(unittest.TestCase):
         retriever = Mock()
         retriever.invoke.return_value = [self.document]
         chat_model = Mock()
-        chat_model.invoke.return_value = AIMessage(content="长资料应该先切分。[rag-intro.md · 第 2 段]")
+        chat_model.invoke.return_value = AIMessage(content="长资料应该先切分。[S1]")
 
         result = answer_with_retriever("资料太长怎么办？", retriever, chat_model)
 
         self.assertEqual(result.sources, (self.document,))
         self.assertIn("长资料应该先切分", result.answer)
+        self.assertEqual([citation.citation_id for citation in result.citations], ["S1"])
+        self.assertEqual(result.citations[0].filename, "rag-intro.md")
         prompt_messages = chat_model.invoke.call_args.args[0].to_messages()
-        self.assertIn("[rag-intro.md · 第 2 段]", prompt_messages[1].content)
+        self.assertIn("[S1]", prompt_messages[1].content)
+        self.assertNotIn("rag-intro.md", prompt_messages[1].content)
         self.assertIn(NO_EVIDENCE_TOKEN, prompt_messages[0].content)
 
     def test_builds_explicit_lcel_runnable_with_retrieval_and_branch(self) -> None:
@@ -79,7 +83,7 @@ class LangChainRAGTests(unittest.TestCase):
         self.assertEqual(ADJACENT_WINDOW, 2)
         self.assertEqual(CONTEXT_LIMIT, 8)
 
-    def test_prompt_requires_focused_plain_text_and_exact_source_labels(self) -> None:
+    def test_prompt_requires_focused_plain_text_and_current_evidence_ids(self) -> None:
         retriever = Mock()
         retriever.invoke.return_value = [self.document]
         chat_model = Mock()
@@ -100,9 +104,19 @@ class LangChainRAGTests(unittest.TestCase):
         self.assertIn("不得用模型知识补全", system_prompt)
         self.assertIn("不使用 Markdown 粗体、LaTeX 或代码围栏", system_prompt)
         self.assertIn("禁止输出“$”或反斜杠开头的 LaTeX 命令", system_prompt)
-        self.assertIn("逐字复制可用资料中已有的完整资料标签", system_prompt)
-        self.assertIn("增加“点”“句”“行”", system_prompt)
+        self.assertIn("Evidence ID", system_prompt)
+        self.assertIn("只能逐字复制可用资料中实际存在的 [S#]", system_prompt)
+        self.assertIn("不得自行生成文件名、页码、链接、摘录", system_prompt)
         self.assertIn("请只返回符合系统规则的最终输出", user_prompt)
+
+    def test_rejects_citation_id_not_present_in_current_context(self) -> None:
+        retriever = Mock()
+        retriever.invoke.return_value = [self.document]
+        chat_model = Mock()
+        chat_model.invoke.return_value = AIMessage(content="答案。[S9]")
+
+        with self.assertRaisesRegex(InvalidCitationError, "Citation ID"):
+            answer_with_retriever("资料太长怎么办？", retriever, chat_model)
 
     def test_converts_observed_latex_formulas_to_readable_text(self) -> None:
         answer = (

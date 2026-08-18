@@ -14,6 +14,7 @@ from app.chunk_documents import (
     encode_web_source_marker,
     extract_pdf_pages,
     load_documents,
+    load_material_units,
     split_text,
 )
 
@@ -57,11 +58,15 @@ class ChunkDocumentsTests(unittest.TestCase):
             )
 
             documents = load_documents(documents_dir)
+            units = load_material_units(documents_dir)
 
         self.assertEqual(
             documents,
             [("web-example.md · 网页：https://example.com/rag", "# RAG\n\n正文")],
         )
+        self.assertEqual(units[0].material.source_type, "web")
+        self.assertEqual(units[0].material.canonical_url, "https://example.com/rag")
+        self.assertIsNone(units[0].page)
 
     def test_rejects_tampered_web_material_body(self) -> None:
         original_body = "# RAG\n\n原始正文"
@@ -112,6 +117,33 @@ class ChunkDocumentsTests(unittest.TestCase):
         self.assertEqual(chunks[0].source, "notes.md")
         self.assertEqual(chunks[0].index, 1)
 
+    def test_repeated_parse_keeps_material_and_chunk_identity_stable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            documents_dir = Path(directory)
+            (documents_dir / "notes.md").write_text("RAG 会先检索资料。", encoding="utf-8")
+
+            first = build_chunks(load_material_units(documents_dir))[0]
+            second = build_chunks(load_material_units(documents_dir))[0]
+
+        self.assertEqual(first.material_id, second.material_id)
+        self.assertEqual(first.chunk_id, second.chunk_id)
+        self.assertEqual(first.content_hash, second.content_hash)
+
+    def test_content_change_keeps_material_identity_but_changes_content_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            documents_dir = Path(directory)
+            path = documents_dir / "notes.md"
+            path.write_text("RAG 会先检索资料。", encoding="utf-8")
+            original = build_chunks(load_material_units(documents_dir))[0]
+
+            path.write_text("RAG 会先检索资料并生成回答。", encoding="utf-8")
+            changed = build_chunks(load_material_units(documents_dir))[0]
+
+        self.assertEqual(original.material_id, changed.material_id)
+        self.assertNotEqual(original.material_content_hash, changed.material_content_hash)
+        self.assertNotEqual(original.content_hash, changed.content_hash)
+        self.assertNotEqual(original.chunk_id, changed.chunk_id)
+
     def test_load_documents_extracts_pdf_text_and_page_number(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             documents_dir = Path(directory)
@@ -121,7 +153,45 @@ class ChunkDocumentsTests(unittest.TestCase):
 
             source = "rag.pdf · 第 1 页"
             self.assertIn(source, documents)
-            self.assertIn("RAG PDF content", documents[source])
+        self.assertIn("RAG PDF content", documents[source])
+
+    def test_pdf_page_is_structured_and_text_material_does_not_fake_page(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            documents_dir = Path(directory)
+            write_text_pdf(documents_dir / "rag.pdf", "RAG PDF content")
+            (documents_dir / "notes.txt").write_text("RAG text", encoding="utf-8")
+
+            chunks = build_chunks(load_material_units(documents_dir))
+
+        pdf_chunk = next(chunk for chunk in chunks if chunk.filename == "rag.pdf")
+        text_chunk = next(chunk for chunk in chunks if chunk.filename == "notes.txt")
+        self.assertEqual(pdf_chunk.page, 1)
+        self.assertEqual(pdf_chunk.source_type, "pdf")
+        self.assertIsNone(text_chunk.page)
+        self.assertEqual(text_chunk.source_type, "text")
+
+    @patch("app.chunk_documents.pdfplumber.open")
+    def test_structured_pdf_page_keeps_original_number_after_blank_page(
+        self,
+        mock_open: Mock,
+    ) -> None:
+        blank_page = Mock()
+        blank_page.extract_text.return_value = ""
+        content_page = Mock()
+        content_page.extract_text.return_value = "second page"
+        mock_open.return_value.__enter__.return_value.pages = [
+            blank_page,
+            content_page,
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            documents_dir = Path(directory)
+            (documents_dir / "rag.pdf").write_bytes(b"test-pdf-content")
+
+            units = load_material_units(documents_dir)
+
+        self.assertEqual(len(units), 1)
+        self.assertEqual(units[0].page, 2)
+        self.assertEqual(units[0].source, "rag.pdf · 第 2 页")
 
     @patch("app.chunk_documents.pdfplumber.open")
     def test_extract_pdf_pages_preserves_chinese_text(self, mock_open: Mock) -> None:

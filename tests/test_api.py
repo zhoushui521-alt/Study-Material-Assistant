@@ -19,6 +19,7 @@ from app.api import (
     lifespan,
 )
 from app.langchain_rag import LangChainRAGError, NO_EVIDENCE_ANSWER, RAGAnswer
+from app.evidence import Citation
 from app.material_ingestion import (
     MaterialDeleteResult,
     MaterialManager,
@@ -125,11 +126,25 @@ class APITests(unittest.TestCase):
     def test_ask_returns_answer_and_source_labels(self) -> None:
         service = Mock(spec=RAGService)
         service.ask.return_value = RAGAnswer(
-            answer="RAG 会先检索相关资料。[rag.md · 第 2 段]",
+            answer="RAG 会先检索相关资料。[S1]",
             sources=(
                 Document(
                     page_content="RAG 会先检索相关资料。",
                     metadata={"source": "rag.md", "chunk_index": 2},
+                ),
+            ),
+            citations=(
+                Citation(
+                    citation_id="S1",
+                    evidence_id="a" * 64,
+                    material_id="b" * 64,
+                    chunk_id="c" * 64,
+                    source="rag.md",
+                    filename="rag.md",
+                    page=None,
+                    chunk_index=2,
+                    excerpt="RAG 会先检索相关资料。",
+                    locator="rag.md#chunk=2",
                 ),
             ),
         )
@@ -146,8 +161,22 @@ class APITests(unittest.TestCase):
         self.assertEqual(
             response.json(),
             {
-                "answer": "RAG 会先检索相关资料。[rag.md · 第 2 段]",
+                "answer": "RAG 会先检索相关资料。[S1]",
                 "sources": ["[rag.md · 第 2 段]"],
+                "citations": [
+                    {
+                        "citation_id": "S1",
+                        "evidence_id": "a" * 64,
+                        "material_id": "b" * 64,
+                        "chunk_id": "c" * 64,
+                        "source": "rag.md",
+                        "filename": "rag.md",
+                        "page": None,
+                        "chunk_index": 2,
+                        "excerpt": "RAG 会先检索相关资料。",
+                        "locator": "rag.md#chunk=2",
+                    }
+                ],
             },
         )
         service.ask.assert_called_once_with("RAG 是什么？")
@@ -181,6 +210,7 @@ class APITests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["answer"], NO_EVIDENCE_ANSWER)
         self.assertEqual(response.json()["sources"], [])
+        self.assertEqual(response.json()["citations"], [])
 
     def test_whitespace_question_is_rejected_before_rag_call(self) -> None:
         with self.assertLogs("uvicorn.error", level="INFO") as captured:

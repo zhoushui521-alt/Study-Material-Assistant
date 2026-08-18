@@ -19,8 +19,20 @@ from langchain_openai import ChatOpenAI
 
 if __package__:
     from app.chat_client import ChatConfig
+    from app.evidence import (
+        Citation,
+        build_evidence_context,
+        format_evidence_context,
+        resolve_citations,
+    )
 else:
     from chat_client import ChatConfig
+    from evidence import (
+        Citation,
+        build_evidence_context,
+        format_evidence_context,
+        resolve_citations,
+    )
 
 
 NO_EVIDENCE_ANSWER = "现有学习资料中没有足够信息回答这个问题。"
@@ -96,8 +108,9 @@ RAG_PROMPT = ChatPromptTemplate.from_messages(
             "“现有学习资料中没有足够信息回答该部分。”，不得用模型知识补全。"
             "只使用适合终端阅读的纯文本，不使用 Markdown 粗体、LaTeX 或代码围栏。"
             "公式必须写成普通文本，禁止输出“$”或反斜杠开头的 LaTeX 命令。"
-            "每条关键信息后只能逐字复制可用资料中已有的完整资料标签，"
-            "不得改写、拼接或增加“点”“句”“行”等资料未提供的位置。",
+            "每条关键信息后必须附上直接支持它的 Evidence ID，例如 [S1]。"
+            "只能逐字复制可用资料中实际存在的 [S#]，不得编造或改写 ID。"
+            "不得自行生成文件名、页码、链接、摘录或其他引用元数据。",
         ),
         (
             "user",
@@ -113,12 +126,17 @@ class LangChainRAGError(RuntimeError):
     """Retriever 或 ChatModel 调用失败时抛出的可读错误。"""
 
 
+class InvalidCitationError(LangChainRAGError):
+    """模型引用了本次 Evidence Map 中不存在的 ID。"""
+
+
 @dataclass(frozen=True)
 class RAGAnswer:
-    """一次 RAG 问答的答案及可展示的回答依据；拒答时依据为空。"""
+    """保留候选 sources，并单独返回服务端验证后的 citations。"""
 
     answer: str
     sources: tuple[Document, ...]
+    citations: tuple[Citation, ...] = ()
 
 
 def create_langchain_chat_model(config: ChatConfig) -> ChatOpenAI:
@@ -141,10 +159,8 @@ def source_label(document: Document) -> str:
 
 
 def format_documents(documents: list[Document]) -> str:
-    """将检索结果格式化为带来源标签的 Prompt 上下文。"""
-    return "\n\n".join(
-        f"{source_label(document)}\n{document.page_content}" for document in documents
-    )
+    """旧公开辅助函数：新问答链使用请求内 Evidence ID。"""
+    return format_evidence_context(build_evidence_context(documents))
 
 
 def normalize_answer_for_terminal(answer: str) -> str:
@@ -249,30 +265,45 @@ def _invoke_chat_model(
 
 
 def _no_evidence_result(_: dict[str, object]) -> RAGAnswer:
-    return RAGAnswer(answer=NO_EVIDENCE_ANSWER, sources=())
+    return RAGAnswer(answer=NO_EVIDENCE_ANSWER, sources=(), citations=())
+
+
+def _attach_evidence_context(state: dict[str, object]) -> dict[str, object]:
+    documents = state["documents"]
+    return {
+        **state,
+        "evidences": build_evidence_context(documents),
+    }
 
 
 def _prompt_inputs(state: dict[str, object]) -> dict[str, object]:
-    documents = state["documents"]
     return {
         "question": state["question"],
-        "context": format_documents(documents),
+        "context": format_evidence_context(state["evidences"]),
     }
 
 
 def _finalize_rag_answer(state: dict[str, object]) -> RAGAnswer:
     answer_text = state["answer_text"]
     documents = state["documents"]
+    evidences = state["evidences"]
     if not isinstance(answer_text, str):
         raise LangChainRAGError("Chat 模型返回了无效回答。")
     answer = answer_text.strip()
     if not answer:
         raise LangChainRAGError("Chat 模型返回了空回答。")
     if NO_EVIDENCE_TOKEN in answer or NO_EVIDENCE_ANSWER in answer:
-        return RAGAnswer(answer=NO_EVIDENCE_ANSWER, sources=())
+        return RAGAnswer(answer=NO_EVIDENCE_ANSWER, sources=(), citations=())
+    normalized_answer = normalize_answer_for_terminal(answer)
+    citations, invalid_ids = resolve_citations(normalized_answer, evidences)
+    if invalid_ids:
+        raise InvalidCitationError(
+            "模型返回了当前上下文中不存在的 Citation ID。"
+        )
     return RAGAnswer(
-        answer=normalize_answer_for_terminal(answer),
+        answer=normalized_answer,
         sources=tuple(documents),
+        citations=citations,
     )
 
 
@@ -288,12 +319,19 @@ def create_rag_chain(
     retrieval_step = RunnableParallel(
         question=RunnablePassthrough(),
         documents=retrieve_documents,
-    ).with_config(run_name="retrieve_context")
+    ).with_config(run_name="retrieve_context") | RunnableLambda(
+        _attach_evidence_context,
+        name="build_evidence_context",
+    )
 
     prompt_step = RunnableParallel(
         documents=RunnableLambda(
             lambda state: state["documents"],
             name="keep_documents_for_answer",
+        ),
+        evidences=RunnableLambda(
+            lambda state: state["evidences"],
+            name="keep_evidence_for_answer",
         ),
         prompt=(
             RunnableLambda(_prompt_inputs, name="format_prompt_context")
@@ -305,6 +343,10 @@ def create_rag_chain(
         documents=RunnableLambda(
             lambda state: state["documents"],
             name="keep_documents_for_sources",
+        ),
+        evidences=RunnableLambda(
+            lambda state: state["evidences"],
+            name="keep_evidence_for_citations",
         ),
         answer_text=(
             RunnableLambda(

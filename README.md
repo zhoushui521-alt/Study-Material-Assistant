@@ -85,7 +85,10 @@ python -m app.search_documents
 
 首次导入资料或资料发生变化时，运行 `app/index_langchain.py`。它会比较当前
 资料 ID 与 Chroma 中已有 ID，只向量化新增或变化的文本块、删除已经失效的
-旧记录，并保留未变化的向量。向量库持久化在 `data/vector_store/`。
+旧记录，并保留未变化的向量。向量库持久化在 `data/vector_store/`，同目录的
+`index_manifest.json` 记录 Embedding、集合、距离度量、Parser/Chunker 和 Metadata
+Schema 版本。已有记录但没有 Manifest 的旧索引只允许问答读取；同步和删除会明确
+失败，不会自动清空或迁移。
 该命令会调用真实 Embedding API，可能产生费用；运行前应先确认解析结果。
 
 索引成功后，运行 `app/search_langchain.py`。它先使用 Chroma 进行语义召回，
@@ -100,7 +103,9 @@ python -m app.ask_langchain "资料太长应该怎么办？"
 ```
 
 它通过包装 Chroma 的混合 Retriever 检索资料，使用 `ChatPromptTemplate`
-组织上下文，再调用百炼 OpenAI 兼容 ChatModel 生成回答，并单独输出检索候选资料。
+组织上下文，为每条上下文证据分配 `S1`、`S2` 等请求内 ID，再调用百炼 OpenAI
+兼容 ChatModel 生成回答。服务端只接受当前上下文真实存在的 ID，并回填文件名、页码、
+摘录和定位信息；`sources` 继续表示兼容用检索候选，`citations` 才表示验证后的实际引用。
 资料没有直接提供答案时，程序会返回统一的证据不足提示。
 该命令会调用真实 Embedding 和 Chat API，可能产生费用。
 

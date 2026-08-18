@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 
 from app.chunk_documents import DocumentChunk
@@ -18,6 +19,7 @@ from app.langchain_store import (
     source_belongs_to_material,
     sync_vector_store,
 )
+from app.index_manifest import LegacyIndexError, load_index_manifest
 
 
 class KeywordEmbeddings(Embeddings):
@@ -121,6 +123,11 @@ class LangChainStoreTests(unittest.TestCase):
                 self.assertEqual(len(vector_store.get()["ids"]), 2)
                 self.assertEqual(results[0][0].metadata["source"], "rag.md")
                 self.assertEqual(results[0][0].metadata["chunk_index"], 1)
+                self.assertEqual(results[0][0].metadata["filename"], "rag.md")
+                self.assertEqual(results[0][0].metadata["source_type"], "markdown")
+                self.assertEqual(len(results[0][0].metadata["material_id"]), 64)
+                self.assertEqual(len(results[0][0].metadata["chunk_id"]), 64)
+                self.assertIsNotNone(load_index_manifest(Path(directory)))
             finally:
                 vector_store.delete_collection()
                 vector_store._client.close()
@@ -231,6 +238,41 @@ class LangChainStoreTests(unittest.TestCase):
                     CountingEmbeddings(),
                     Path(directory),
                 )
+
+    def test_sync_refuses_legacy_index_without_mutating_existing_records(self) -> None:
+        embeddings = CountingEmbeddings()
+        with tempfile.TemporaryDirectory() as directory:
+            persist_directory = Path(directory)
+            vector_store = open_vector_store(embeddings, persist_directory)
+            vector_store.add_documents(
+                documents=[
+                    Document(
+                        page_content="legacy content",
+                        metadata={"source": "legacy.md", "chunk_index": 1},
+                    )
+                ],
+                ids=["legacy-id"],
+            )
+            close_vector_store(vector_store)
+            embedding_count_before_sync = embeddings.document_count
+
+            with self.assertRaisesRegex(LegacyIndexError, "legacy index"):
+                sync_vector_store(
+                    [DocumentChunk("notes.md", 1, "new content")],
+                    embeddings,
+                    persist_directory,
+                )
+            with self.assertRaisesRegex(LegacyIndexError, "legacy index"):
+                delete_material_documents("legacy.md", persist_directory)
+
+            remaining = open_vector_store(None, persist_directory)
+            try:
+                self.assertEqual(remaining.get(include=[])["ids"], ["legacy-id"])
+                self.assertEqual(embeddings.document_count, embedding_count_before_sync)
+                self.assertIsNone(load_index_manifest(persist_directory))
+            finally:
+                remaining.delete_collection()
+                close_vector_store(remaining)
 
     def test_sync_can_explicitly_clear_the_last_material(self) -> None:
         chunks = [DocumentChunk("rag.md", 1, "RAG 会先检索相关资料。")]

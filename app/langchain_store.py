@@ -1,6 +1,5 @@
 """使用 LangChain 和 Chroma 管理持久化学习资料向量库。"""
 
-import hashlib
 import re
 from dataclasses import dataclass
 from math import ceil
@@ -12,12 +11,44 @@ from langchain_core.embeddings import Embeddings
 from langchain_openai import OpenAIEmbeddings
 
 if __package__:
-    from app.chunk_documents import DocumentChunk, PROJECT_ROOT
+    from app.chunk_documents import (
+        CHUNKER_VERSION,
+        CLEANER_VERSION,
+        METADATA_SCHEMA_VERSION,
+        PARSER_VERSION,
+        DocumentChunk,
+        PROJECT_ROOT,
+    )
     from app.embedding_client import EmbeddingConfig
+    from app.index_manifest import (
+        DISTANCE_METRIC,
+        EMBEDDING_PROVIDER,
+        IndexRuntimeConfig,
+        LegacyIndexError,
+        check_index_compatibility,
+        load_index_manifest,
+        prepare_manifest_for_write,
+    )
     from app.security_limits import EMBEDDING_TIMEOUT_SECONDS, EXTERNAL_API_MAX_RETRIES
 else:
-    from chunk_documents import DocumentChunk, PROJECT_ROOT
+    from chunk_documents import (
+        CHUNKER_VERSION,
+        CLEANER_VERSION,
+        METADATA_SCHEMA_VERSION,
+        PARSER_VERSION,
+        DocumentChunk,
+        PROJECT_ROOT,
+    )
     from embedding_client import EmbeddingConfig
+    from index_manifest import (
+        DISTANCE_METRIC,
+        EMBEDDING_PROVIDER,
+        IndexRuntimeConfig,
+        LegacyIndexError,
+        check_index_compatibility,
+        load_index_manifest,
+        prepare_manifest_for_write,
+    )
     from security_limits import EMBEDDING_TIMEOUT_SECONDS, EXTERNAL_API_MAX_RETRIES
 
 
@@ -51,6 +82,50 @@ def create_langchain_embeddings(config: EmbeddingConfig) -> OpenAIEmbeddings:
     )
 
 
+def runtime_index_config(config: EmbeddingConfig) -> IndexRuntimeConfig:
+    """从运行配置提取索引身份；明确排除 api_key 与 base_url。"""
+    return IndexRuntimeConfig(
+        embedding_provider=EMBEDDING_PROVIDER,
+        embedding_model=config.model,
+        embedding_dimension=config.dimensions,
+        collection_name=COLLECTION_NAME,
+        distance_metric=DISTANCE_METRIC,
+        parser_version=PARSER_VERSION,
+        cleaner_version=CLEANER_VERSION,
+        chunker_version=CHUNKER_VERSION,
+        metadata_schema_version=METADATA_SCHEMA_VERSION,
+    )
+
+
+def _runtime_config_for_embeddings(
+    embedding_function: Embeddings,
+) -> IndexRuntimeConfig:
+    """为 Fake/自定义 Embedding 测试生成不含敏感字段的确定性 Manifest。"""
+    model = getattr(embedding_function, "model", None)
+    dimensions = getattr(embedding_function, "dimensions", None)
+    return IndexRuntimeConfig(
+        embedding_provider="custom-embeddings",
+        embedding_model=(
+            model
+            if isinstance(model, str) and model
+            else type(embedding_function).__qualname__
+        ),
+        embedding_dimension=(
+            dimensions
+            if isinstance(dimensions, int)
+            and not isinstance(dimensions, bool)
+            and dimensions > 0
+            else None
+        ),
+        collection_name=COLLECTION_NAME,
+        distance_metric=DISTANCE_METRIC,
+        parser_version=PARSER_VERSION,
+        cleaner_version=CLEANER_VERSION,
+        chunker_version=CHUNKER_VERSION,
+        metadata_schema_version=METADATA_SCHEMA_VERSION,
+    )
+
+
 def open_vector_store(
     embedding_function: Embeddings | None,
     persist_directory: Path = VECTOR_STORE_DIR,
@@ -74,40 +149,68 @@ def close_vector_store(vector_store: Chroma) -> None:
 
 def chunks_to_documents(chunks: list[DocumentChunk]) -> list[Document]:
     """把手写阶段的文本块转换成 LangChain 标准 Document。"""
-    return [
-        Document(
-            page_content=chunk.content,
-            metadata={"source": chunk.source, "chunk_index": chunk.index},
-        )
-        for chunk in chunks
-    ]
+    documents = []
+    for chunk in chunks:
+        metadata: dict[str, str | int] = {
+            "source": chunk.source,
+            "chunk_index": chunk.index,
+            "material_id": chunk.material_id,
+            "chunk_id": chunk.chunk_id,
+            "source_type": chunk.source_type,
+            "filename": chunk.filename,
+            "material_content_hash": chunk.material_content_hash,
+            "content_hash": chunk.content_hash,
+            "parser_version": chunk.parser_version,
+            "cleaner_version": chunk.cleaner_version,
+            "chunker_version": chunk.chunker_version,
+            "metadata_schema_version": chunk.metadata_schema_version,
+        }
+        if chunk.page is not None:
+            metadata["page"] = chunk.page
+        if chunk.section is not None:
+            metadata["section"] = chunk.section
+        if chunk.canonical_url is not None:
+            metadata["canonical_url"] = chunk.canonical_url
+        documents.append(Document(page_content=chunk.content, metadata=metadata))
+    return documents
 
 
 def document_id(document: Document) -> str:
-    """根据来源、段号和内容生成稳定 ID，便于识别同一资料块。"""
-    raw_value = (
-        f"{document.metadata['source']}:{document.metadata['chunk_index']}:"
-        f"{document.page_content}"
-    )
-    return hashlib.sha256(raw_value.encode("utf-8")).hexdigest()
+    """使用 Stage 1 Chunk ID；缺失该字段时明确失败。"""
+    chunk_id = document.metadata.get("chunk_id")
+    if not isinstance(chunk_id, str) or not re.fullmatch(r"[0-9a-f]{64}", chunk_id):
+        raise ValueError("Document 缺少有效 chunk_id，无法建立稳定索引身份。")
+    return chunk_id
 
 
 def rebuild_vector_store(
     chunks: list[DocumentChunk],
     embedding_function: Embeddings,
     persist_directory: Path = VECTOR_STORE_DIR,
+    *,
+    runtime_config: IndexRuntimeConfig | None = None,
 ) -> Chroma:
     """清空旧索引，并把当前资料重新写入 Chroma。"""
     if not chunks:
         raise ValueError("没有可建立索引的资料文本块。")
 
     vector_store = open_vector_store(embedding_function, persist_directory)
-    vector_store.reset_collection()
-    documents = chunks_to_documents(chunks)
-    vector_store.add_documents(
-        documents=documents,
-        ids=[document_id(document) for document in documents],
-    )
+    try:
+        stored_ids = set(vector_store.get(include=[])["ids"])
+        prepare_manifest_for_write(
+            persist_directory,
+            runtime_config or _runtime_config_for_embeddings(embedding_function),
+            has_records=bool(stored_ids),
+        )
+        vector_store.reset_collection()
+        documents = chunks_to_documents(chunks)
+        vector_store.add_documents(
+            documents=documents,
+            ids=[document_id(document) for document in documents],
+        )
+    except Exception:
+        close_vector_store(vector_store)
+        raise
     return vector_store
 
 
@@ -117,6 +220,7 @@ def sync_vector_store(
     persist_directory: Path = VECTOR_STORE_DIR,
     *,
     allow_empty: bool = False,
+    runtime_config: IndexRuntimeConfig | None = None,
 ) -> VectorStoreSyncResult:
     """只添加新增或变化的文本块，并删除当前资料中已不存在的旧记录。"""
     if not chunks and not allow_empty:
@@ -130,6 +234,11 @@ def sync_vector_store(
     vector_store = open_vector_store(embedding_function, persist_directory)
     try:
         stored_ids = set(vector_store.get(include=[])["ids"])
+        prepare_manifest_for_write(
+            persist_directory,
+            runtime_config or _runtime_config_for_embeddings(embedding_function),
+            has_records=bool(stored_ids),
+        )
         current_ids = set(documents_by_id)
 
         new_ids = [item_id for item_id in documents_by_id if item_id not in stored_ids]
@@ -159,6 +268,8 @@ def sync_vector_store(
 def estimate_vector_store_sync_batches(
     chunks: list[DocumentChunk],
     persist_directory: Path = VECTOR_STORE_DIR,
+    *,
+    runtime_config: IndexRuntimeConfig | None = None,
 ) -> int:
     """零费用计算下一次增量同步真正需要新增的 Embedding 批次数。"""
     documents = chunks_to_documents(chunks)
@@ -169,6 +280,13 @@ def estimate_vector_store_sync_batches(
     vector_store = open_vector_store(None, persist_directory)
     try:
         stored_ids = set(vector_store.get(include=[])["ids"])
+        if runtime_config is not None:
+            check_index_compatibility(
+                persist_directory,
+                runtime_config,
+                has_records=bool(stored_ids),
+                access="write",
+            )
     finally:
         close_vector_store(vector_store)
     new_document_count = len(set(documents_by_id) - stored_ids)
@@ -198,6 +316,11 @@ def delete_material_documents(
     vector_store = open_vector_store(None, persist_directory)
     try:
         stored = vector_store.get(include=["metadatas"])
+        if stored.get("ids") and load_index_manifest(persist_directory) is None:
+            raise LegacyIndexError(
+                "现有 Chroma 是没有 Manifest 的 legacy index；禁止自动修改，"
+                "请显式迁移或重新索引。"
+            )
         matching_ids = [
             item_id
             for item_id, metadata in zip(
@@ -206,7 +329,10 @@ def delete_material_documents(
                 strict=True,
             )
             if isinstance(metadata, dict)
-            and source_belongs_to_material(metadata.get("source"), filename)
+            and (
+                metadata.get("filename") == filename
+                or source_belongs_to_material(metadata.get("source"), filename)
+            )
         ]
         if matching_ids:
             vector_store.delete(ids=matching_ids)

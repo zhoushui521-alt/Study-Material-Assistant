@@ -1,29 +1,35 @@
 """将学习资料写入 LangChain + Chroma 持久化向量库。"""
 
 if __package__:
-    from app.chunk_documents import DOCUMENTS_DIR, build_chunks, load_documents
+    from app.chunk_documents import DOCUMENTS_DIR, build_chunks, load_material_units
     from app.embedding_client import EmbeddingConfig
     from app.langchain_store import (
         VECTOR_STORE_DIR,
         create_langchain_embeddings,
+        runtime_index_config,
         sync_vector_store,
     )
 else:
-    from chunk_documents import DOCUMENTS_DIR, build_chunks, load_documents
+    from chunk_documents import DOCUMENTS_DIR, build_chunks, load_material_units
     from embedding_client import EmbeddingConfig
     from langchain_store import (
         VECTOR_STORE_DIR,
         create_langchain_embeddings,
+        runtime_index_config,
         sync_vector_store,
     )
 
 
 def main() -> None:
     try:
-        chunks = build_chunks(load_documents(DOCUMENTS_DIR))
+        chunks = build_chunks(load_material_units(DOCUMENTS_DIR))
         config = EmbeddingConfig.from_environment()
         embeddings = create_langchain_embeddings(config)
-        sync_result = sync_vector_store(chunks, embeddings)
+        sync_result = sync_vector_store(
+            chunks,
+            embeddings,
+            runtime_config=runtime_index_config(config),
+        )
     except Exception as error:
         print(f"同步索引失败：{error}")
         return

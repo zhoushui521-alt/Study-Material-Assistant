@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 
+from app.index_manifest import LegacyIndexError
+
 from app.material_ingestion import (
     IndexSyncSummary,
     MaterialConflictError,
@@ -319,6 +321,25 @@ class MaterialIngestionTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(MaterialRollbackError, "需要检查"):
+                manager.delete_material("notes.md")
+
+            self.assertTrue(material.is_file())
+
+    def test_legacy_index_delete_restores_file_without_uncertain_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            documents = root / "documents"
+            documents.mkdir()
+            material = documents / "notes.md"
+            material.write_text("资料", encoding="utf-8")
+            manager = self.make_manager(
+                root,
+                delete_index=lambda filename: (_ for _ in ()).throw(
+                    LegacyIndexError("legacy index")
+                ),
+            )
+
+            with self.assertRaisesRegex(MaterialIndexError, "未修改现有索引"):
                 manager.delete_material("notes.md")
 
             self.assertTrue(material.is_file())

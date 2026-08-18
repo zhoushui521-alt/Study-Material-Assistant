@@ -21,7 +21,7 @@ if __package__:
         DocumentChunk,
         DocumentLoadError,
         build_chunks,
-        load_documents,
+        load_material_units,
     )
     from app.embedding_client import EmbeddingConfig
     from app.langchain_store import (
@@ -30,9 +30,11 @@ if __package__:
         create_langchain_embeddings,
         delete_material_documents,
         estimate_vector_store_sync_batches,
+        runtime_index_config,
         source_belongs_to_material,
         sync_vector_store,
     )
+    from app.index_manifest import IndexManifestError
     from app.security_limits import (
         INDEX_MAX_BATCHES_PER_OPERATION,
         MAX_UPLOAD_EXTRACTED_CHARACTERS,
@@ -47,7 +49,7 @@ else:
         DocumentChunk,
         DocumentLoadError,
         build_chunks,
-        load_documents,
+        load_material_units,
     )
     from embedding_client import EmbeddingConfig
     from langchain_store import (
@@ -56,9 +58,11 @@ else:
         create_langchain_embeddings,
         delete_material_documents,
         estimate_vector_store_sync_batches,
+        runtime_index_config,
         source_belongs_to_material,
         sync_vector_store,
     )
+    from index_manifest import IndexManifestError
     from security_limits import (
         INDEX_MAX_BATCHES_PER_OPERATION,
         MAX_UPLOAD_EXTRACTED_CHARACTERS,
@@ -244,8 +248,14 @@ def _write_upload_stream(
 
 
 def _production_sync_index(chunks: list[DocumentChunk]) -> IndexSyncSummary:
-    embeddings = create_langchain_embeddings(EmbeddingConfig.from_environment())
-    sync_result = sync_vector_store(chunks, embeddings, allow_empty=True)
+    config = EmbeddingConfig.from_environment()
+    embeddings = create_langchain_embeddings(config)
+    sync_result = sync_vector_store(
+        chunks,
+        embeddings,
+        allow_empty=True,
+        runtime_config=runtime_index_config(config),
+    )
     try:
         return IndexSyncSummary(
             added=sync_result.added,
@@ -254,6 +264,14 @@ def _production_sync_index(chunks: list[DocumentChunk]) -> IndexSyncSummary:
         )
     finally:
         close_vector_store(sync_result.vector_store)
+
+
+def _production_estimate_index_batches(chunks: list[DocumentChunk]) -> int:
+    config = EmbeddingConfig.from_environment()
+    return estimate_vector_store_sync_batches(
+        chunks,
+        runtime_config=runtime_index_config(config),
+    )
 
 
 class MaterialManager:
@@ -297,7 +315,7 @@ class MaterialManager:
         self._sync_index = sync_index or _production_sync_index
         self._delete_index = delete_index or delete_material_documents
         self._estimate_index_batches = (
-            estimate_index_batches or estimate_vector_store_sync_batches
+            estimate_index_batches or _production_estimate_index_batches
         )
 
     def cleanup_stale_pending_uploads(self, *, now: datetime | None = None) -> int:
@@ -405,7 +423,7 @@ class MaterialManager:
             )
             incoming_path.replace(staged_path)
             _validate_file_signature(staged_path)
-            documents = load_documents(
+            documents = load_material_units(
                 upload_directory,
                 max_pdf_pages=self.max_pdf_pages,
                 max_total_characters=self.max_extracted_characters,
@@ -482,7 +500,7 @@ class MaterialManager:
         """在正式提交前按 Chroma 现状计算实际待新增的批次数。"""
         staged, staged_path = self._load_staged(upload_id)
         self._check_operation_state(staged.filename, staged.operation)
-        current_chunks = build_chunks(load_documents(self.documents_dir))
+        current_chunks = build_chunks(load_material_units(self.documents_dir))
         if staged.operation == "replace":
             current_chunks = [
                 chunk
@@ -490,7 +508,7 @@ class MaterialManager:
                 if not source_belongs_to_material(chunk.source, staged.filename)
             ]
         staged_chunks = build_chunks(
-            load_documents(
+            load_material_units(
                 staged_path.parent,
                 max_pdf_pages=self.max_pdf_pages,
                 max_total_characters=self.max_extracted_characters,
@@ -515,7 +533,7 @@ class MaterialManager:
         final_path = self.documents_dir / staged.filename
         backup_directory = self.pending_deletions_dir / uuid4().hex
         backup_path = backup_directory / staged.filename
-        old_chunks = build_chunks(load_documents(self.documents_dir))
+        old_chunks = build_chunks(load_material_units(self.documents_dir))
         moved_existing = False
 
         try:
@@ -524,7 +542,7 @@ class MaterialManager:
                 final_path.replace(backup_path)
                 moved_existing = True
             staged_path.replace(final_path)
-            new_chunks = build_chunks(load_documents(self.documents_dir))
+            new_chunks = build_chunks(load_material_units(self.documents_dir))
             sync_result = self._sync_index(new_chunks)
         except Exception as error:
             try:
@@ -532,7 +550,8 @@ class MaterialManager:
                     final_path.replace(staged_path)
                 if moved_existing and backup_path.exists():
                     backup_path.replace(final_path)
-                self._sync_index(old_chunks)
+                if not isinstance(error, IndexManifestError):
+                    self._sync_index(old_chunks)
             except Exception as rollback_error:
                 raise MaterialRollbackError(
                     "索引失败，且资料与索引的自动回滚未能完成。"
@@ -594,6 +613,10 @@ class MaterialManager:
                 raise MaterialRollbackError(
                     "删除索引失败，且资料文件自动恢复失败。"
                 ) from rollback_error
+            if isinstance(error, IndexManifestError):
+                raise MaterialIndexError(
+                    "索引配置不兼容，资料文件已恢复，未修改现有索引。"
+                ) from error
             raise MaterialRollbackError(
                 "删除索引失败，资料文件已恢复，但索引状态需要检查。"
             ) from error

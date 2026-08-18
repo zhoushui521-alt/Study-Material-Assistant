@@ -17,7 +17,16 @@ if __package__:
         create_langchain_chat_model,
         create_rag_chain,
     )
-    from app.langchain_store import create_langchain_embeddings, open_vector_store
+    from app.langchain_store import (
+        VECTOR_STORE_DIR,
+        create_langchain_embeddings,
+        open_vector_store,
+        runtime_index_config,
+    )
+    from app.index_manifest import (
+        IndexCompatibilityStatus,
+        check_index_compatibility,
+    )
 else:
     from chat_client import ChatConfig
     from embedding_client import EmbeddingConfig
@@ -27,7 +36,13 @@ else:
         create_langchain_chat_model,
         create_rag_chain,
     )
-    from langchain_store import create_langchain_embeddings, open_vector_store
+    from langchain_store import (
+        VECTOR_STORE_DIR,
+        create_langchain_embeddings,
+        open_vector_store,
+        runtime_index_config,
+    )
+    from index_manifest import IndexCompatibilityStatus, check_index_compatibility
 
 
 RETRIEVAL_LIMIT = 3
@@ -56,6 +71,7 @@ class RAGService:
     vector_store: Chroma
     retriever: BaseRetriever
     chat_model: BaseChatModel
+    index_status: IndexCompatibilityStatus = IndexCompatibilityStatus.COMPATIBLE
     rag_chain: Runnable[str, RAGAnswer] = field(init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
 
@@ -78,11 +94,24 @@ def create_rag_service() -> RAGService:
     """从环境配置和本地 Chroma 索引构造正式 RAG 服务。"""
     vector_store = None
     try:
-        embeddings = create_langchain_embeddings(EmbeddingConfig.from_environment())
+        embedding_config = EmbeddingConfig.from_environment()
+        embeddings = create_langchain_embeddings(embedding_config)
         vector_store = open_vector_store(embeddings)
-        if not vector_store.get(limit=1)["ids"]:
+        has_records = bool(vector_store.get(limit=1)["ids"])
+        if not has_records:
             raise RAGServiceInitializationError(
                 "向量库中没有资料，请先运行 app.index_langchain 建立索引。"
+            )
+        index_status = check_index_compatibility(
+            VECTOR_STORE_DIR,
+            runtime_index_config(embedding_config),
+            has_records=has_records,
+            access="read",
+        )
+        if index_status is IndexCompatibilityStatus.LEGACY_READ_ONLY:
+            logger.warning(
+                "当前 Chroma 没有 Index Manifest，以 legacy read-only 模式提供问答；"
+                "任何索引写入都会被拒绝，直到显式迁移或重新索引。"
             )
 
         retriever = HybridRetriever(
@@ -97,6 +126,7 @@ def create_rag_service() -> RAGService:
             vector_store=vector_store,
             retriever=retriever,
             chat_model=chat_model,
+            index_status=index_status,
         )
     except Exception as error:
         if vector_store is not None:
