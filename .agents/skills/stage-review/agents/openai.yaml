@@ -1,0 +1,4 @@
+interface:
+  display_name: "Stage Review"
+  short_description: "基于真实 Git、代码与验证证据生成项目阶段学习复盘"
+  default_prompt: "使用 $stage-review 复盘已完成的 V2 阶段，并基于真实证据生成自然中文学习复盘。"
