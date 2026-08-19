@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -8,7 +9,11 @@ from unittest.mock import Mock, patch
 
 from langchain_core.documents import Document
 
-from app.evaluate_retrieval import main as retrieval_main
+from app.evaluate_retrieval import (
+    EvaluationIndexSnapshot,
+    disposable_evaluation_snapshot,
+    main as retrieval_main,
+)
 from app.index_manifest import IndexCompatibilityStatus
 from app.retrieval_evaluation import (
     DEFAULT_RETRIEVAL_EVALUATION_PATH,
@@ -17,6 +22,8 @@ from app.retrieval_evaluation import (
     RetrievalConfig,
     RetrievalEvaluationCase,
     RetrievalEvaluationDataError,
+    RetrievalEvaluationReportError,
+    RetrievalEvaluationRun,
     RetrievalTrace,
     StableGoldMeaning,
     build_retrieval_report,
@@ -27,9 +34,11 @@ from app.retrieval_evaluation import (
     evaluate_retrieval_cases,
     find_unresolved_gold_mappings,
     load_retrieval_cases,
+    load_persisted_retrieval_report,
     ndcg_at_k,
     recall_at_k,
     reciprocal_rank,
+    rebuild_retrieval_report_aggregates,
     trace_retrieval,
     write_retrieval_report,
 )
@@ -399,6 +408,89 @@ class CitationAndReportTests(unittest.TestCase):
             self.assertNotEqual(first, second)
             self.assertEqual(len(list(Path(directory).glob("*.json"))), 2)
 
+    def test_run_persists_each_case_and_rebuilds_aggregates(self) -> None:
+        good_result = evaluate_retrieval_cases(
+            [make_case()],
+            FakeVectorStore([(make_document(2, "gold"), 0.9)]),
+            RetrievalConfig(adjacent_window=0),
+        )[0]
+        second_case = replace(make_case(), case_id="case-2")
+        missed_result = evaluate_retrieval_cases(
+            [second_case],
+            FakeVectorStore([]),
+            RetrievalConfig(adjacent_window=0),
+        )[0]
+
+        with tempfile.TemporaryDirectory() as directory:
+            run = RetrievalEvaluationRun.create(
+                dataset_path=DEFAULT_RETRIEVAL_EVALUATION_PATH,
+                output_directory=Path(directory),
+                config=RetrievalConfig(adjacent_window=0),
+                git_commit="d" * 40,
+                stage2_start_commit="e" * 40,
+                started_at=datetime(2026, 8, 19, tzinfo=UTC),
+                validation_level="fixture",
+                embedding_model=None,
+                original_index_fingerprint="f" * 64,
+            )
+            self.assertEqual(
+                load_persisted_retrieval_report(run.path)["run_status"],
+                "ready",
+            )
+
+            run.persist_case_result(good_result)
+            after_first = load_persisted_retrieval_report(run.path)
+            self.assertEqual(len(after_first["per_case_results"]), 1)
+            self.assertEqual(after_first["cost"]["query_embedding_calls"], 1)
+
+            run.persist_case_result(missed_result)
+            after_second = load_persisted_retrieval_report(run.path)
+            self.assertEqual(len(after_second["per_case_results"]), 2)
+            self.assertEqual(after_second["aggregate_metrics"]["raw_recall_at_1"], 0.5)
+
+            without_aggregates = dict(after_second)
+            without_aggregates["aggregate_metrics"] = {"stale": 999}
+            rebuilt = rebuild_retrieval_report_aggregates(without_aggregates)
+            self.assertNotIn("stale", rebuilt["aggregate_metrics"])
+            self.assertEqual(rebuilt["aggregate_metrics"]["raw_recall_at_1"], 0.5)
+
+    def test_finalization_failure_keeps_completed_cases_recoverable(self) -> None:
+        result = evaluate_retrieval_cases(
+            [make_case()],
+            FakeVectorStore([(make_document(2, "gold"), 0.9)]),
+            RetrievalConfig(adjacent_window=0),
+        )[0]
+        with tempfile.TemporaryDirectory() as directory:
+            run = RetrievalEvaluationRun.create(
+                dataset_path=DEFAULT_RETRIEVAL_EVALUATION_PATH,
+                output_directory=Path(directory),
+                config=RetrievalConfig(adjacent_window=0),
+                git_commit="d" * 40,
+                stage2_start_commit="e" * 40,
+                started_at=datetime(2026, 8, 19, tzinfo=UTC),
+                validation_level="fixture",
+                embedding_model=None,
+                original_index_fingerprint="f" * 64,
+            )
+            run.persist_case_result(result)
+
+            with patch(
+                "app.retrieval_evaluation._atomic_replace_report",
+                side_effect=RetrievalEvaluationReportError("finalization failed"),
+            ):
+                with self.assertRaisesRegex(
+                    RetrievalEvaluationReportError,
+                    "finalization failed",
+                ):
+                    run.finalize(original_index_unchanged=True)
+
+            recovered = load_persisted_retrieval_report(run.path)
+            self.assertEqual(recovered["run_status"], "running")
+            self.assertEqual(len(recovered["per_case_results"]), 1)
+            self.assertIsNone(
+                recovered["index_isolation"]["original_index_unchanged"]
+            )
+
 
 class RetrievalRunnerTests(unittest.TestCase):
     @patch("app.evaluate_retrieval.open_vector_store")
@@ -409,51 +501,122 @@ class RetrievalRunnerTests(unittest.TestCase):
         self.assertEqual(exit_code, 2)
         open_vector_store.assert_not_called()
 
-    @patch("app.evaluate_retrieval.write_retrieval_report")
-    @patch("app.evaluate_retrieval.build_retrieval_report")
-    @patch("app.evaluate_retrieval.evaluate_retrieval_cases", return_value=())
-    @patch("app.evaluate_retrieval.find_unresolved_gold_mappings", return_value=())
-    @patch("app.evaluate_retrieval.check_index_compatibility")
-    @patch("app.evaluate_retrieval.open_vector_store")
-    @patch("app.evaluate_retrieval.create_langchain_embeddings")
-    @patch("app.evaluate_retrieval.EmbeddingConfig.from_environment")
-    @patch("app.evaluate_retrieval.close_vector_store")
-    def test_legacy_index_evaluation_is_read_only(
-        self,
-        close_vector_store: Mock,
-        from_environment: Mock,
-        create_embeddings: Mock,
-        open_vector_store: Mock,
-        check_compatibility: Mock,
-        find_unresolved: Mock,
-        evaluate_cases: Mock,
-        build_report: Mock,
-        write_report: Mock,
-    ) -> None:
-        config = Mock(model="embedding-model")
-        from_environment.return_value = config
-        store = Mock()
-        store.get.side_effect = [
-            {"ids": ["legacy"]},
-            {"ids": [], "documents": [], "metadatas": []},
-            {"ids": [], "documents": [], "metadatas": []},
-        ]
-        open_vector_store.return_value = store
-        check_compatibility.return_value = IndexCompatibilityStatus.LEGACY_READ_ONLY
-        build_report.return_value = {"report_schema_version": 2}
-        write_report.return_value = Path("report.json")
+    def test_git_preflight_fails_before_embedding_client_is_created(self) -> None:
+        with patch(
+            "app.evaluate_retrieval._git_commit",
+            side_effect=RuntimeError("git unavailable"),
+        ), patch(
+            "app.evaluate_retrieval.create_langchain_embeddings"
+        ) as create_embeddings, patch(
+            "builtins.print"
+        ):
+            exit_code = retrieval_main(["--confirm-query-embedding-cost"])
 
-        with patch("app.evaluate_retrieval._git_commit", return_value="d" * 64), patch(
+        self.assertEqual(exit_code, 2)
+        create_embeddings.assert_not_called()
+
+    def test_output_preflight_failure_happens_before_embedding_call(self) -> None:
+        snapshot = EvaluationIndexSnapshot(Path("snapshot"), "f" * 64)
+        config = Mock(model="embedding-model")
+        with patch("app.evaluate_retrieval._git_commit", return_value="d" * 40), patch(
+            "app.evaluate_retrieval.EmbeddingConfig.from_environment",
+            return_value=config,
+        ), patch(
+            "app.evaluate_retrieval.disposable_evaluation_snapshot",
+            return_value=nullcontext(snapshot),
+        ), patch(
+            "app.evaluate_retrieval._preflight_snapshot",
+            return_value=IndexCompatibilityStatus.LEGACY_READ_ONLY,
+        ), patch.object(
+            RetrievalEvaluationRun,
+            "create",
+            side_effect=RetrievalEvaluationReportError("output unavailable"),
+        ), patch(
+            "app.evaluate_retrieval.create_langchain_embeddings"
+        ) as create_embeddings, patch(
+            "builtins.print"
+        ):
+            exit_code = retrieval_main(["--confirm-query-embedding-cost"])
+
+        self.assertEqual(exit_code, 2)
+        create_embeddings.assert_not_called()
+
+    def test_evaluation_queries_snapshot_path_only(self) -> None:
+        snapshot = EvaluationIndexSnapshot(Path("snapshot"), "f" * 64)
+        config = Mock(model="embedding-model")
+        query_store = Mock()
+        result = evaluate_retrieval_cases(
+            [make_case()],
+            FakeVectorStore([(make_document(2, "gold"), 0.9)]),
+            RetrievalConfig(adjacent_window=0),
+        )[0]
+        run = Mock(path=Path("report.json"))
+        run.finalize.return_value = {
+            "per_case_results": [{"failure_category": None}]
+        }
+        with patch(
+            "app.evaluate_retrieval.load_retrieval_cases",
+            return_value=(make_case(),),
+        ), patch("app.evaluate_retrieval._git_commit", return_value="d" * 40), patch(
+            "app.evaluate_retrieval.EmbeddingConfig.from_environment",
+            return_value=config,
+        ), patch(
+            "app.evaluate_retrieval.disposable_evaluation_snapshot",
+            return_value=nullcontext(snapshot),
+        ), patch(
+            "app.evaluate_retrieval._preflight_snapshot",
+            return_value=IndexCompatibilityStatus.LEGACY_READ_ONLY,
+        ), patch.object(
+            RetrievalEvaluationRun,
+            "create",
+            return_value=run,
+        ), patch(
+            "app.evaluate_retrieval.create_langchain_embeddings",
+            return_value=Mock(),
+        ), patch(
+            "app.evaluate_retrieval.open_vector_store",
+            return_value=query_store,
+        ) as open_vector_store, patch(
+            "app.evaluate_retrieval.evaluate_retrieval_cases",
+            return_value=(result,),
+        ), patch("app.evaluate_retrieval.close_vector_store"), patch(
             "builtins.print"
         ):
             exit_code = retrieval_main(["--confirm-query-embedding-cost"])
 
         self.assertEqual(exit_code, 0)
-        self.assertEqual(check_compatibility.call_args.kwargs["access"], "read")
-        store.add_documents.assert_not_called()
-        store.delete.assert_not_called()
-        store.reset_collection.assert_not_called()
-        close_vector_store.assert_called_once_with(store)
+        self.assertEqual(open_vector_store.call_args.kwargs["persist_directory"], snapshot.path)
+        self.assertNotEqual(
+            open_vector_store.call_args.kwargs["persist_directory"],
+            Path("data/vector_store"),
+        )
+        run.persist_case_result.assert_called_once_with(result)
+
+    def test_disposable_snapshot_can_mutate_without_changing_original(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            original = Path(directory) / "original"
+            nested = original / "segment"
+            nested.mkdir(parents=True)
+            original_file = nested / "data.bin"
+            original_file.write_bytes(b"original bytes")
+
+            with disposable_evaluation_snapshot(original) as snapshot:
+                (snapshot.path / "segment" / "data.bin").write_bytes(b"changed")
+                (snapshot.path / "query-cache.bin").write_bytes(b"snapshot only")
+
+            self.assertEqual(original_file.read_bytes(), b"original bytes")
+            self.assertFalse((original / "query-cache.bin").exists())
+
+    def test_disposable_snapshot_detects_original_index_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            original = Path(directory) / "original"
+            original.mkdir()
+            original_file = original / "data.bin"
+            original_file.write_bytes(b"before")
+
+            with self.assertRaisesRegex(RuntimeError, "filesystem 指纹发生变化"):
+                with disposable_evaluation_snapshot(original):
+                    original_file.write_bytes(b"after")
 
 
 if __name__ == "__main__":

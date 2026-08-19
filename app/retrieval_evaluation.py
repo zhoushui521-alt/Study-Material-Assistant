@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -50,6 +51,7 @@ RETRIEVAL_REPORT_SCHEMA_VERSION = 2
 RETRIEVAL_EVALUATION_VERSION = "study-material-retrieval-eval-v1"
 CASE_ID_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]*")
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+GIT_COMMIT_PATTERN = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 RECALL_K_VALUES = (1, 3, 5, 10)
 
 
@@ -808,6 +810,89 @@ def _dataset_metadata(path: Path) -> dict[str, object]:
     }
 
 
+def serialize_retrieval_case_result(
+    result: RetrievalCaseResult,
+) -> dict[str, object]:
+    """把单个 Case 转成可独立持久化、可重建聚合的报告记录。"""
+    return {
+        "case_id": result.case.case_id,
+        "answerable": result.case.answerable,
+        "case_types": list(result.case.case_types),
+        "metrics": result.metrics,
+        "failure_category": result.failure_category,
+        "failure_notes": list(result.failure_notes),
+        "trace": asdict(result.trace),
+    }
+
+
+def rebuild_retrieval_report_aggregates(
+    report: Mapping[str, object],
+) -> dict[str, object]:
+    """只依赖已持久化的 per-case records 重建聚合指标、失败与耗时。"""
+    rebuilt = dict(report)
+    raw_results = rebuilt.get("per_case_results")
+    if not isinstance(raw_results, list):
+        raise RetrievalEvaluationReportError("Retrieval Report 缺少 per_case_results。")
+
+    results: list[dict[str, object]] = []
+    seen_case_ids = set()
+    for raw_result in raw_results:
+        if not isinstance(raw_result, dict):
+            raise RetrievalEvaluationReportError("per_case_results 包含无效记录。")
+        case_id = raw_result.get("case_id")
+        metrics = raw_result.get("metrics")
+        trace = raw_result.get("trace")
+        latency = trace.get("latency_ms") if isinstance(trace, dict) else None
+        total_latency = latency.get("total_retrieval") if isinstance(latency, dict) else None
+        if not isinstance(case_id, str) or not case_id:
+            raise RetrievalEvaluationReportError("per_case_results 包含无效 case_id。")
+        if case_id in seen_case_ids:
+            raise RetrievalEvaluationReportError(f"per_case_results 包含重复案例：{case_id}。")
+        if not isinstance(metrics, dict):
+            raise RetrievalEvaluationReportError(f"案例 {case_id} 缺少 metrics。")
+        if (
+            isinstance(total_latency, bool)
+            or not isinstance(total_latency, (int, float))
+            or total_latency < 0
+        ):
+            raise RetrievalEvaluationReportError(
+                f"案例 {case_id} 缺少有效 total_retrieval latency。"
+            )
+        seen_case_ids.add(case_id)
+        results.append(raw_result)
+
+    metric_names = sorted(
+        {
+            name
+            for result in results
+            for name in result["metrics"]
+            if name != "gold_count"
+        }
+    )
+    rebuilt["aggregate_metrics"] = {
+        name: _average([result["metrics"].get(name) for result in results])
+        for name in metric_names
+    }
+    failure_counts = Counter(
+        result.get("failure_category")
+        for result in results
+        if isinstance(result.get("failure_category"), str)
+    )
+    rebuilt["failure_categories"] = {
+        "counts": dict(sorted(failure_counts.items())),
+        "supported": [category.value for category in FailureCategory],
+    }
+    total_latencies = [
+        result["trace"]["latency_ms"]["total_retrieval"] for result in results
+    ]
+    rebuilt["latency"] = {
+        "total_retrieval_ms": sum(total_latencies),
+        "average_retrieval_ms": _average(total_latencies),
+        "measurement": "local_wall_clock",
+    }
+    return rebuilt
+
+
 def build_retrieval_report(
     results: Sequence[RetrievalCaseResult],
     *,
@@ -822,23 +907,12 @@ def build_retrieval_report(
 ) -> dict[str, object]:
     if generated_at.tzinfo is None:
         raise RetrievalEvaluationReportError("generated_at 必须包含时区。")
-    if not SHA256_PATTERN.fullmatch(git_commit):
+    if not GIT_COMMIT_PATTERN.fullmatch(git_commit):
         raise RetrievalEvaluationReportError("git_commit 必须是完整 commit hash。")
-    if not SHA256_PATTERN.fullmatch(stage2_start_commit):
+    if not GIT_COMMIT_PATTERN.fullmatch(stage2_start_commit):
         raise RetrievalEvaluationReportError("stage2_start_commit 必须是完整 commit hash。")
-    metric_names = sorted(
-        {name for result in results for name in result.metrics if name != "gold_count"}
-    )
-    aggregate_metrics = {
-        name: _average([result.metrics.get(name) for result in results])
-        for name in metric_names
-    }
-    failure_counts = Counter(
-        result.failure_category for result in results if result.failure_category
-    )
-    total_latency = [result.trace.latency_ms["total_retrieval"] for result in results]
     dataset_metadata = _dataset_metadata(dataset_path)
-    return {
+    report = {
         "report_schema_version": RETRIEVAL_REPORT_SCHEMA_VERSION,
         "evaluation_type": "retrieval",
         "evaluation_version": RETRIEVAL_EVALUATION_VERSION,
@@ -847,33 +921,17 @@ def build_retrieval_report(
         "git_commit": git_commit,
         "stage2_start_commit": stage2_start_commit,
         "retrieval_config": asdict(config),
-        "aggregate_metrics": aggregate_metrics,
-        "per_case_results": [
-            {
-                "case_id": result.case.case_id,
-                "answerable": result.case.answerable,
-                "case_types": list(result.case.case_types),
-                "metrics": result.metrics,
-                "failure_category": result.failure_category,
-                "failure_notes": list(result.failure_notes),
-                "trace": asdict(result.trace),
-            }
-            for result in results
-        ],
-        "failure_categories": {
-            "counts": dict(sorted(failure_counts.items())),
-            "supported": [category.value for category in FailureCategory],
-        },
-        "latency": {
-            "total_retrieval_ms": sum(total_latency),
-            "average_retrieval_ms": _average(total_latency),
-            "measurement": "local_wall_clock",
-        },
+        "aggregate_metrics": {},
+        "per_case_results": [serialize_retrieval_case_result(result) for result in results],
+        "failure_categories": {},
+        "latency": {},
         "models": {
             "embedding": {
                 "model": embedding_model,
                 "validation_level": (
-                    "real_embedding" if validation_level == "local_real_retrieval" else validation_level
+                    "real_embedding"
+                    if validation_level == "local_real_retrieval"
+                    else validation_level
                 ),
             },
             "chat": None,
@@ -894,6 +952,7 @@ def build_retrieval_report(
         "generated_at": generated_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
         "validation_level": validation_level,
     }
+    return rebuild_retrieval_report_aggregates(report)
 
 
 def write_retrieval_report(
@@ -908,6 +967,8 @@ def write_retrieval_report(
         with path.open("x", encoding="utf-8", newline="\n") as output:
             created = True
             output.write(json.dumps(dict(report), ensure_ascii=False, indent=2) + "\n")
+            output.flush()
+            os.fsync(output.fileno())
     except (OSError, TypeError, ValueError) as error:
         if created:
             try:
@@ -918,3 +979,140 @@ def write_retrieval_report(
             f"无法保存 Retrieval Report 到 {output_directory}。"
         ) from error
     return path
+
+
+def load_persisted_retrieval_report(path: Path) -> dict[str, object]:
+    """读取 crash-safe Retrieval run state。"""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RetrievalEvaluationReportError(f"无法读取 Retrieval run state：{path}。") from error
+    if not isinstance(payload, dict):
+        raise RetrievalEvaluationReportError("Retrieval run state 根节点必须是对象。")
+    return payload
+
+
+def _atomic_replace_report(path: Path, report: Mapping[str, object]) -> None:
+    temporary_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        with temporary_path.open("x", encoding="utf-8", newline="\n") as output:
+            output.write(json.dumps(dict(report), ensure_ascii=False, indent=2) + "\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary_path, path)
+    except (OSError, TypeError, ValueError) as error:
+        try:
+            temporary_path.unlink()
+        except OSError:
+            pass
+        raise RetrievalEvaluationReportError(
+            f"无法原子更新 Retrieval run state：{path}。"
+        ) from error
+
+
+@dataclass(frozen=True)
+class RetrievalEvaluationRun:
+    """一个轻量 JSON journal；每完成一个 Case 就原子替换持久化状态。"""
+
+    path: Path
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        dataset_path: Path,
+        output_directory: Path,
+        config: RetrievalConfig,
+        git_commit: str,
+        stage2_start_commit: str,
+        started_at: datetime,
+        validation_level: str,
+        embedding_model: str | None,
+        original_index_fingerprint: str,
+    ) -> "RetrievalEvaluationRun":
+        report = build_retrieval_report(
+            (),
+            dataset_path=dataset_path,
+            config=config,
+            git_commit=git_commit,
+            stage2_start_commit=stage2_start_commit,
+            generated_at=started_at,
+            validation_level=validation_level,
+            embedding_model=embedding_model,
+            query_embedding_calls=0,
+        )
+        timestamp = started_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        report.update(
+            {
+                "run_status": "ready",
+                "started_at": timestamp,
+                "last_persisted_at": timestamp,
+                "completed_at": None,
+                "index_isolation": {
+                    "mode": "disposable_snapshot",
+                    "original_index_fingerprint_sha256": original_index_fingerprint,
+                    "original_index_unchanged": None,
+                },
+            }
+        )
+        return cls(write_retrieval_report(report, output_directory))
+
+    def persist_case_result(
+        self,
+        result: RetrievalCaseResult,
+        *,
+        persisted_at: datetime | None = None,
+    ) -> dict[str, object]:
+        report = load_persisted_retrieval_report(self.path)
+        raw_results = report.get("per_case_results")
+        if not isinstance(raw_results, list):
+            raise RetrievalEvaluationReportError("Retrieval run state 缺少 per_case_results。")
+        if any(
+            isinstance(item, dict) and item.get("case_id") == result.case.case_id
+            for item in raw_results
+        ):
+            raise RetrievalEvaluationReportError(
+                f"Retrieval run state 已包含案例：{result.case.case_id}。"
+            )
+        raw_results.append(serialize_retrieval_case_result(result))
+        report["per_case_results"] = raw_results
+        report = rebuild_retrieval_report_aggregates(report)
+        cost = report.get("cost")
+        if not isinstance(cost, dict):
+            raise RetrievalEvaluationReportError("Retrieval run state 缺少 cost metadata。")
+        cost["query_embedding_calls"] = len(raw_results)
+        report["cost"] = cost
+        report["run_status"] = "running"
+        now = persisted_at or datetime.now(UTC)
+        report["last_persisted_at"] = now.astimezone(UTC).isoformat().replace(
+            "+00:00", "Z"
+        )
+        _atomic_replace_report(self.path, report)
+        return report
+
+    def finalize(
+        self,
+        *,
+        original_index_unchanged: bool,
+        completed_at: datetime | None = None,
+    ) -> dict[str, object]:
+        if not original_index_unchanged:
+            raise RetrievalEvaluationReportError(
+                "原始 Index 字节指纹发生变化，拒绝完成 Retrieval Report。"
+            )
+        report = rebuild_retrieval_report_aggregates(
+            load_persisted_retrieval_report(self.path)
+        )
+        now = completed_at or datetime.now(UTC)
+        timestamp = now.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        isolation = report.get("index_isolation")
+        if not isinstance(isolation, dict):
+            raise RetrievalEvaluationReportError("Retrieval run state 缺少 index_isolation。")
+        isolation["original_index_unchanged"] = True
+        report["index_isolation"] = isolation
+        report["run_status"] = "completed"
+        report["completed_at"] = timestamp
+        report["last_persisted_at"] = timestamp
+        report["generated_at"] = timestamp
+        _atomic_replace_report(self.path, report)
+        return report

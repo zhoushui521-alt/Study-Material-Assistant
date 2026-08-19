@@ -182,8 +182,12 @@ Handling Failure 分开。单 Gold 案例上的 nDCG 与 MRR 信息高度重合�
 python -m app.evaluate_retrieval
 ```
 
-显式确认后，每个案例调用一次真实 Query Embedding，读取当前 Chroma 并生成唯一 JSON
-报告；不调用 ChatModel，不写索引，不迁移 legacy index，也不自动补 Manifest：
+显式确认后，Runner 先完成 Git commit、Dataset、Gold Mapping、Retrieval Config 和报告
+输出位置 preflight，再把当前 Chroma 复制为 disposable Evaluation Snapshot。每个案例调用
+一次真实 Query Embedding，并在案例完成后把结果原子持久化到唯一 JSON run state；最终聚合
+可从已持久化的 per-case results 重建。Evaluation 只查询 snapshot，退出后以目录和文件内容
+SHA-256 指纹验证原始 Index 未变化；不调用 ChatModel，不迁移 legacy index，也不自动补
+Manifest：
 
 ```powershell
 python -m app.evaluate_retrieval --confirm-query-embedding-cost
@@ -192,8 +196,9 @@ python -m app.evaluate_retrieval --confirm-query-embedding-cost
 Stage 2 可以确定性验证 Citation ID 是否存在于本次 Evidence Map；Citation Coverage
 仍需要 Claim 标注，Citation Support 仍需要人工或经授权的 Judge。有效 Citation ID
 不等于 Evidence 真正支持对应 Claim。当前仅完成 Fixture/Mock 基础设施验证，尚未在本
-阶段执行真实 Query Embedding，因此没有新的真实 Retrieval Baseline，也不能据此决定
-Stage 3 是否加入 BM25、Reranker、Query Rewrite 或调整 Chunk、阈值、Top-K 和权重。
+修复后的 crash-safe Runner 尚未再次执行真实 Query Embedding，因此当前没有可恢复、已完成的
+真实 Retrieval Baseline Report，也不能据此决定 Stage 3 是否加入 BM25、Reranker、Query
+Rewrite 或调整 Chunk、阈值、Top-K 和权重。
 
 ## 最小 FastAPI 服务
 
