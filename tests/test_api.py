@@ -27,6 +27,7 @@ from app.material_ingestion import (
     BatchStageResult,
     IndexSyncSummary,
     MaterialDeleteResult,
+    MaterialIndexReadOnlyError,
     MaterialManager,
     MaterialRollbackError,
     MaterialSyncResult,
@@ -821,6 +822,25 @@ class APITests(unittest.TestCase):
         manager.commit_staged_batch.assert_called_once_with(upload_ids)
         cached_service.close.assert_called_once_with()
         self.assertIsNone(app.state.rag_service)
+
+    def test_batch_index_reports_legacy_read_only_before_commit(self) -> None:
+        manager = Mock(spec=MaterialManager)
+        upload_ids = ["a" * 32, "b" * 32]
+        manager.estimate_index_batches_batch.side_effect = MaterialIndexReadOnlyError(
+            "现有索引处于只读兼容性保护；未调用 Embedding，"
+            "未提交资料或写入新向量记录。"
+        )
+        app.dependency_overrides[get_material_manager] = lambda: manager
+
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/materials/batch/index",
+                json={"upload_ids": upload_ids, "confirm_api_cost": True},
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("只读兼容性保护", response.json()["detail"])
+        manager.commit_staged_batch.assert_not_called()
 
     def test_index_rejects_over_budget_staged_upload_before_commit(self) -> None:
         manager = Mock(spec=MaterialManager)

@@ -43,6 +43,7 @@ from app.material_ingestion import (
     MaterialDeleteResult,
     MaterialFile,
     MaterialIndexError,
+    MaterialIndexReadOnlyError,
     MaterialManager,
     MaterialNotFoundError,
     MaterialRollbackError,
@@ -674,6 +675,11 @@ def raise_material_http_error(error: Exception) -> None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="资料与索引未能恢复一致，请暂停操作并检查服务。",
+        ) from error
+    if isinstance(error, MaterialIndexReadOnlyError):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
         ) from error
     if isinstance(error, MaterialIndexError):
         raise HTTPException(

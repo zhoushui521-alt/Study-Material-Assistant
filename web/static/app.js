@@ -87,7 +87,7 @@ function messageForStatus(status) {
   return "请求未成功，请检查输入后重试。";
 }
 
-function materialMessageForStatus(status) {
+function materialMessageForStatus(status, detail = "") {
   if (status === 429) {
     return "资料操作过于频繁、服务正忙或费用保护已触发，请稍后再试。";
   }
@@ -95,7 +95,7 @@ function materialMessageForStatus(status) {
     return "文件超过 10 MiB 限制。";
   }
   if (status === 409) {
-    return "同名资料状态冲突，请检查新增或替换操作。";
+    return detail || "同名资料状态冲突，请检查新增或替换操作。";
   }
   if (status === 422) {
     return "文件名、类型、内容或确认参数无效。";
@@ -311,7 +311,11 @@ async function stageMaterial() {
       return;
     }
     if (!response.ok) {
-      showMaterialMessage("error", materialMessageForStatus(response.status), requestId);
+      showMaterialMessage(
+        "error",
+        materialMessageForStatus(response.status, payload.detail),
+        requestId,
+      );
       return;
     }
   } catch {
@@ -417,7 +421,11 @@ async function confirmIndex() {
     const requestId = response.headers.get("X-Request-ID") || "";
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      showMaterialMessage("error", materialMessageForStatus(response.status), requestId);
+      showMaterialMessage(
+        "error",
+        materialMessageForStatus(response.status, payload.detail),
+        requestId,
+      );
       return;
     }
     showMaterialMessage(
@@ -463,7 +471,11 @@ async function deleteMaterial(filename, button) {
     const requestId = response.headers.get("X-Request-ID") || "";
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      showMaterialMessage("error", materialMessageForStatus(response.status), requestId);
+      showMaterialMessage(
+        "error",
+        materialMessageForStatus(response.status, payload.detail),
+        requestId,
+      );
       return;
     }
     showMaterialMessage(

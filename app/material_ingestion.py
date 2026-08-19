@@ -131,6 +131,10 @@ class MaterialIndexError(MaterialIngestionError):
     """资料文件与 Chroma 索引未能同步。"""
 
 
+class MaterialIndexReadOnlyError(MaterialIndexError):
+    """现有索引受只读兼容性保护，不能执行写入。"""
+
+
 class MaterialRollbackError(MaterialIndexError):
     """索引失败后的补偿回滚也未能完成。"""
 
@@ -682,9 +686,15 @@ class MaterialManager:
                 max_total_characters=self.max_extracted_characters,
             )
         )
-        estimated_batches = self._estimate_index_batches(
-            [*current_chunks, *staged_chunks]
-        )
+        try:
+            estimated_batches = self._estimate_index_batches(
+                [*current_chunks, *staged_chunks]
+            )
+        except IndexManifestError as error:
+            raise MaterialIndexReadOnlyError(
+                "现有索引处于只读兼容性保护；未调用 Embedding，"
+                "未提交资料或写入新向量记录。"
+            ) from error
         if (
             isinstance(estimated_batches, bool)
             or not isinstance(estimated_batches, int)
@@ -696,9 +706,15 @@ class MaterialManager:
     def estimate_index_batches_batch(self, upload_ids: Sequence[str]) -> int:
         """按一份候选资料集合计算批量提交的真实新增批次数。"""
         loaded = self._load_staged_batch(upload_ids)
-        estimated_batches = self._estimate_index_batches(
-            self._chunks_with_staged_batch(loaded)
-        )
+        try:
+            estimated_batches = self._estimate_index_batches(
+                self._chunks_with_staged_batch(loaded)
+            )
+        except IndexManifestError as error:
+            raise MaterialIndexReadOnlyError(
+                "现有索引处于只读兼容性保护；未调用 Embedding，"
+                "未提交资料或写入新向量记录。"
+            ) from error
         if (
             isinstance(estimated_batches, bool)
             or not isinstance(estimated_batches, int)

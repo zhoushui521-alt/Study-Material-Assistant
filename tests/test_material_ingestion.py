@@ -18,6 +18,7 @@ from app.material_ingestion import (
     IndexSyncSummary,
     MaterialConflictError,
     MaterialIndexError,
+    MaterialIndexReadOnlyError,
     MaterialManager,
     MaterialRollbackError,
     MaterialTooLargeError,
@@ -502,6 +503,32 @@ class MaterialIngestionTests(unittest.TestCase):
             self.assertIn("保留资料", contents)
             self.assertIn("新资料", contents)
             self.assertNotIn("旧资料", contents)
+
+    def test_legacy_index_estimate_fails_before_commit_with_explicit_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = self.make_manager(
+                root,
+                estimate_index_batches=lambda chunks: (_ for _ in ()).throw(
+                    LegacyIndexError("legacy index")
+                ),
+            )
+            staged = manager.stage_upload(
+                filename="notes.md",
+                content_type="text/markdown",
+                stream=BytesIO("新增资料".encode()),
+            )
+
+            with self.assertRaisesRegex(
+                MaterialIndexReadOnlyError,
+                "未调用 Embedding，未提交资料或写入新向量记录",
+            ):
+                manager.estimate_index_batches(staged.upload_id)
+
+            self.assertFalse((root / "documents" / "notes.md").exists())
+            self.assertTrue(
+                (root / "pending_uploads" / staged.upload_id / "notes.md").exists()
+            )
 
     def test_rejects_spoofed_pdf_signature(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
