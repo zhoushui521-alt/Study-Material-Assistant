@@ -23,6 +23,7 @@ if __package__:
         build_chunks,
         load_material_units,
     )
+    from app.docx_parser import DocxParseError, validate_docx_package
     from app.embedding_client import EmbeddingConfig
     from app.langchain_store import (
         BAILIAN_EMBEDDING_BATCH_SIZE,
@@ -51,6 +52,7 @@ else:
         build_chunks,
         load_material_units,
     )
+    from docx_parser import DocxParseError, validate_docx_package
     from embedding_client import EmbeddingConfig
     from langchain_store import (
         BAILIAN_EMBEDDING_BATCH_SIZE,
@@ -92,6 +94,10 @@ ALLOWED_CONTENT_TYPES = {
     ".txt": {"text/plain", "application/octet-stream"},
     ".md": {"text/markdown", "text/plain", "application/octet-stream"},
     ".pdf": {"application/pdf", "application/octet-stream"},
+    ".docx": {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/octet-stream",
+    },
 }
 
 UploadOperation = Literal["add", "replace"]
@@ -190,6 +196,8 @@ def validate_material_filename(filename: str | None) -> str:
     if normalized.split(".", maxsplit=1)[0].upper() in WINDOWS_RESERVED_NAMES:
         raise MaterialValidationError("文件名使用了 Windows 保留名称。")
     suffix = Path(normalized).suffix.lower()
+    if suffix == ".doc":
+        raise MaterialValidationError("旧版 .doc 暂不支持，请另存为 .docx 后上传。")
     if suffix not in SUPPORTED_DOCUMENT_SUFFIXES:
         supported = "、".join(sorted(SUPPORTED_DOCUMENT_SUFFIXES))
         raise MaterialValidationError(f"只支持以下文件类型：{supported}。")
@@ -213,6 +221,12 @@ def _validate_file_signature(path: Path) -> None:
         with path.open("rb") as file:
             if file.read(5) != b"%PDF-":
                 raise MaterialValidationError("PDF 文件签名无效。")
+        return
+    if suffix == ".docx":
+        try:
+            validate_docx_package(path)
+        except DocxParseError as error:
+            raise MaterialValidationError(str(error)) from error
         return
 
     try:

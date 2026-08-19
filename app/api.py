@@ -745,7 +745,10 @@ def list_materials(
     status_code=status.HTTP_202_ACCEPTED,
 )
 def stage_material_upload(
-    file: Annotated[UploadFile, File(description="TXT、Markdown 或 PDF 学习资料")],
+    file: Annotated[
+        UploadFile,
+        File(description="TXT、Markdown、DOCX 或 PDF 学习资料"),
+    ],
     manager: Annotated[MaterialManager, Depends(get_material_manager)],
     guard: Annotated[OperationGuard, Depends(get_operation_guard)],
     operation: Annotated[Literal["add", "replace"], Form()] = "add",

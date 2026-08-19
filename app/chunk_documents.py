@@ -19,14 +19,16 @@ from pdfminer.pdfparser import PDFSyntaxError
 from pdfplumber.utils.exceptions import PdfminerException
 
 if __package__:
+    from app.docx_parser import DocxParseError, extract_docx_blocks
     from app.evidence import chunk_identity, material_identity, stable_sha256
 else:
+    from docx_parser import DocxParseError, extract_docx_blocks
     from evidence import chunk_identity, material_identity, stable_sha256
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DOCUMENTS_DIR = PROJECT_ROOT / "data" / "documents"
-SUPPORTED_DOCUMENT_SUFFIXES = {".txt", ".md", ".pdf"}
+SUPPORTED_DOCUMENT_SUFFIXES = {".txt", ".md", ".pdf", ".docx"}
 WEB_SOURCE_MARKER_PREFIX = "<!-- study-material-web-source-v1:"
 WEB_SOURCE_MARKER_SUFFIX = " -->"
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
@@ -38,6 +40,11 @@ METADATA_SCHEMA_VERSION = "1"
 PDF_SOURCE_PATTERN = re.compile(r"^(?P<filename>.+\.pdf) · 第 (?P<page>[1-9][0-9]*) 页$")
 WEB_SOURCE_PATTERN = re.compile(
     r"^(?P<filename>.+\.md) · 网页：(?P<url>https?://.+)$"
+)
+DOCX_SOURCE_PATTERN = re.compile(
+    r"^(?P<filename>.+\.docx) · 第 (?P<index>[1-9][0-9]*) "
+    r"(?P<kind>段|个表格)$",
+    re.IGNORECASE,
 )
 
 
@@ -58,13 +65,15 @@ class Material:
 
 @dataclass(frozen=True)
 class MaterialUnit:
-    """Parser 产出的可切分单元；PDF 每页一个单元，其余资料通常一个。"""
+    """Parser 产出的可切分单元；PDF 按页，DOCX 按段落或表格。"""
 
     material: Material
     source: str
     text: str
     page: int | None = None
     section: str | None = None
+    paragraph_index: int | None = None
+    table_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -80,6 +89,8 @@ class DocumentChunk:
     filename: str = ""
     page: int | None = None
     section: str | None = None
+    paragraph_index: int | None = None
+    table_index: int | None = None
     material_content_hash: str = ""
     content_hash: str = ""
     canonical_url: str | None = None
@@ -96,6 +107,7 @@ class DocumentChunk:
         canonical_url = self.canonical_url
         pdf_match = PDF_SOURCE_PATTERN.fullmatch(self.source)
         web_match = WEB_SOURCE_PATTERN.fullmatch(self.source)
+        docx_match = DOCX_SOURCE_PATTERN.fullmatch(self.source)
         if not filename and pdf_match:
             filename = pdf_match.group("filename")
             source_type = source_type or "pdf"
@@ -104,6 +116,9 @@ class DocumentChunk:
             filename = web_match.group("filename")
             source_type = source_type or "web"
             canonical_url = canonical_url or web_match.group("url")
+        elif not filename and docx_match:
+            filename = docx_match.group("filename")
+            source_type = source_type or "docx"
         elif not filename:
             filename = self.source
         if not source_type:
@@ -111,6 +126,7 @@ class DocumentChunk:
                 ".md": "markdown",
                 ".txt": "text",
                 ".pdf": "pdf",
+                ".docx": "docx",
             }.get(Path(filename).suffix.casefold(), "unknown")
         content_hash = self.content_hash or stable_sha256(self.content)
         material_id = self.material_id or material_identity(
@@ -124,6 +140,8 @@ class DocumentChunk:
             content_hash=content_hash,
             page=page,
             section=self.section,
+            paragraph_index=self.paragraph_index,
+            table_index=self.table_index,
         )
         object.__setattr__(self, "filename", filename)
         object.__setattr__(self, "source_type", source_type)
@@ -363,6 +381,46 @@ def load_material_units(
                 )
                 for source, text in loaded_pages
             ]
+        elif suffix == ".docx":
+            remaining_characters = (
+                None
+                if max_total_characters is None
+                else max_total_characters - total_characters
+            )
+            if remaining_characters is not None and remaining_characters <= 0:
+                raise DocumentLoadError("资料提取文字超过安全限制。")
+            try:
+                blocks = extract_docx_blocks(
+                    path,
+                    max_total_characters=remaining_characters,
+                )
+            except DocxParseError as error:
+                raise DocumentLoadError(str(error)) from error
+            content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+            material = Material(
+                material_id=material_identity(
+                    source_type="docx",
+                    filename=path.name,
+                ),
+                source_type="docx",
+                filename=path.name,
+                content_hash=content_hash,
+            )
+            loaded = [
+                MaterialUnit(
+                    material=material,
+                    source=(
+                        f"{path.name} · 第 {block.paragraph_index} 段"
+                        if block.paragraph_index is not None
+                        else f"{path.name} · 第 {block.table_index} 个表格"
+                    ),
+                    text=block.text,
+                    section=block.section,
+                    paragraph_index=block.paragraph_index,
+                    table_index=block.table_index,
+                )
+                for block in blocks
+            ]
         else:
             text = path.read_text(encoding="utf-8")
             if suffix == ".md":
@@ -429,10 +487,13 @@ def split_text(text: str, chunk_size: int = 180) -> list[str]:
 def _legacy_material_unit(source: str, text: str) -> MaterialUnit:
     pdf_match = PDF_SOURCE_PATTERN.fullmatch(source)
     web_match = WEB_SOURCE_PATTERN.fullmatch(source)
+    docx_match = DOCX_SOURCE_PATTERN.fullmatch(source)
     filename = source
     source_type = "unknown"
     page = None
     canonical_url = None
+    paragraph_index = None
+    table_index = None
     if pdf_match:
         filename = pdf_match.group("filename")
         source_type = "pdf"
@@ -441,11 +502,19 @@ def _legacy_material_unit(source: str, text: str) -> MaterialUnit:
         filename = web_match.group("filename")
         source_type = "web"
         canonical_url = web_match.group("url")
+    elif docx_match:
+        filename = docx_match.group("filename")
+        source_type = "docx"
+        if docx_match.group("kind") == "段":
+            paragraph_index = int(docx_match.group("index"))
+        else:
+            table_index = int(docx_match.group("index"))
     else:
         source_type = {
             ".md": "markdown",
             ".txt": "text",
             ".pdf": "pdf",
+            ".docx": "docx",
         }.get(Path(filename).suffix.casefold(), "unknown")
     content_hash = stable_sha256(text)
     material = Material(
@@ -464,6 +533,8 @@ def _legacy_material_unit(source: str, text: str) -> MaterialUnit:
         source=source,
         text=text,
         page=page,
+        paragraph_index=paragraph_index,
+        table_index=table_index,
     )
 
 
@@ -490,6 +561,8 @@ def build_chunks(
                     filename=unit.material.filename,
                     page=unit.page,
                     section=unit.section,
+                    paragraph_index=unit.paragraph_index,
+                    table_index=unit.table_index,
                     material_content_hash=unit.material.content_hash,
                     content_hash=content_hash,
                     canonical_url=unit.material.canonical_url,

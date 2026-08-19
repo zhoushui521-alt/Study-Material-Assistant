@@ -3,11 +3,13 @@ import json
 import tempfile
 import unittest
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from uuid import UUID
 from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi.testclient import TestClient
+from docx import Document as WordDocument
 from langchain_core.documents import Document
 
 from app.api import (
@@ -21,6 +23,7 @@ from app.api import (
 from app.langchain_rag import LangChainRAGError, NO_EVIDENCE_ANSWER, RAGAnswer
 from app.evidence import Citation
 from app.material_ingestion import (
+    IndexSyncSummary,
     MaterialDeleteResult,
     MaterialManager,
     MaterialRollbackError,
@@ -104,6 +107,11 @@ class APITests(unittest.TestCase):
         self.assertIn("智能学习资料助手", page.text)
         self.assertIn('id="ask-form"', page.text)
         self.assertIn('id="web-preview-form"', page.text)
+        self.assertIn(".docx", page.text)
+        self.assertIn(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            page.text,
+        )
         self.assertIn("default-src 'self'", page.headers["content-security-policy"])
         self.assertEqual(page.headers["referrer-policy"], "no-referrer")
 
@@ -472,6 +480,45 @@ class APITests(unittest.TestCase):
         call = manager.stage_upload.call_args.kwargs
         self.assertEqual(call["filename"], "notes.md")
         self.assertEqual(call["operation"], "add")
+        create_service.assert_not_called()
+
+    def test_stages_real_docx_parser_through_api_without_indexing(self) -> None:
+        root = Path(self.temporary_directory.name) / "docx-api"
+        sync_index = Mock(return_value=IndexSyncSummary(1, 0, 0))
+        manager = MaterialManager(
+            documents_dir=root / "documents",
+            pending_uploads_dir=root / "pending_uploads",
+            pending_deletions_dir=root / "pending_deletions",
+            sync_index=sync_index,
+            delete_index=lambda filename: 0,
+            estimate_index_batches=lambda chunks: 1,
+        )
+        app.dependency_overrides[get_material_manager] = lambda: manager
+        stream = BytesIO()
+        document = WordDocument()
+        document.add_heading("RAG", level=1)
+        document.add_paragraph("DOCX 通过 API 进入现有资料管线。")
+        document.save(stream)
+
+        with patch("app.api.create_rag_service") as create_service:
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/materials/stage",
+                    files={
+                        "file": (
+                            "notes.docx",
+                            stream.getvalue(),
+                            "application/vnd.openxmlformats-officedocument."
+                            "wordprocessingml.document",
+                        )
+                    },
+                    data={"operation": "add"},
+                )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()["document_units"], 2)
+        self.assertEqual(response.json()["chunk_count"], 2)
+        sync_index.assert_not_called()
         create_service.assert_not_called()
 
     def test_previews_web_material_without_indexing_or_initializing_rag(self) -> None:

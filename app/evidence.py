@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from langchain_core.documents import Document
 
@@ -13,6 +13,11 @@ SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 PDF_SOURCE_PATTERN = re.compile(r"^(?P<filename>.+\.pdf) · 第 (?P<page>[1-9][0-9]*) 页$")
 WEB_SOURCE_PATTERN = re.compile(
     r"^(?P<filename>.+\.md) · 网页：(?P<url>https?://.+)$"
+)
+DOCX_SOURCE_PATTERN = re.compile(
+    r"^(?P<filename>.+\.docx) · 第 (?P<index>[1-9][0-9]*) "
+    r"(?P<kind>段|个表格)$",
+    re.IGNORECASE,
 )
 CITATION_ID_PATTERN = re.compile(r"\[(S[0-9]+)\]")
 
@@ -45,8 +50,21 @@ def chunk_identity(
     content_hash: str,
     page: int | None = None,
     section: str | None = None,
+    paragraph_index: int | None = None,
+    table_index: int | None = None,
 ) -> str:
     """Chunk 身份随位置或规范化内容变化，未变化的块可继续增量复用。"""
+    if paragraph_index is not None or table_index is not None:
+        return stable_sha256(
+            "chunk-v1",
+            material_id,
+            page or "",
+            section or "",
+            paragraph_index or "",
+            table_index or "",
+            chunk_index,
+            content_hash,
+        )
     return stable_sha256(
         "chunk-v1",
         material_id,
@@ -123,8 +141,19 @@ def _legacy_source_metadata(source: str) -> dict[str, object]:
             "page": None,
             "canonical_url": web_match.group("url"),
         }
+    docx_match = DOCX_SOURCE_PATTERN.fullmatch(source)
+    if docx_match:
+        return {
+            "filename": docx_match.group("filename"),
+            "source_type": "docx",
+            "page": None,
+            "canonical_url": None,
+        }
     suffix = source.rsplit(".", maxsplit=1)[-1].casefold() if "." in source else ""
-    source_type = {"md": "markdown", "txt": "text"}.get(suffix, "unknown")
+    source_type = {"md": "markdown", "txt": "text", "docx": "docx"}.get(
+        suffix,
+        "unknown",
+    )
     return {
         "filename": source,
         "source_type": source_type,
@@ -144,6 +173,8 @@ def evidence_from_document(document: Document, context_id: str) -> Evidence:
         page = _optional_positive_int(legacy["page"])
     section_value = document.metadata.get("section")
     section = section_value if isinstance(section_value, str) and section_value else None
+    paragraph_index = _optional_positive_int(document.metadata.get("paragraph_index"))
+    table_index = _optional_positive_int(document.metadata.get("table_index"))
     chunk_index = _positive_int(document.metadata.get("chunk_index"))
     canonical_value = document.metadata.get("canonical_url")
     canonical_url = (
@@ -179,6 +210,8 @@ def evidence_from_document(document: Document, context_id: str) -> Evidence:
             content_hash=content_hash,
             page=page,
             section=section,
+            paragraph_index=paragraph_index,
+            table_index=table_index,
         )
     )
     if isinstance(canonical_url, str) and canonical_url:
@@ -186,6 +219,14 @@ def evidence_from_document(document: Document, context_id: str) -> Evidence:
         locator = f"{canonical_url}{separator}chunk={chunk_index}"
     elif page is not None:
         locator = f"{filename}#page={page}&chunk={chunk_index}"
+    elif source_type == "docx" and paragraph_index is not None:
+        section_part = f"section={quote(section, safe='')}&" if section else ""
+        locator = (
+            f"{filename}#{section_part}paragraph={paragraph_index}&chunk={chunk_index}"
+        )
+    elif source_type == "docx" and table_index is not None:
+        section_part = f"section={quote(section, safe='')}&" if section else ""
+        locator = f"{filename}#{section_part}table={table_index}&chunk={chunk_index}"
     else:
         locator = f"{filename}#chunk={chunk_index}"
     return Evidence(

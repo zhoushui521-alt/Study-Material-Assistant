@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 
+from docx import Document as WordDocument
+
 from app.index_manifest import LegacyIndexError
 
 from app.material_ingestion import (
@@ -18,6 +20,15 @@ from app.material_ingestion import (
     MaterialValidationError,
     validate_material_filename,
 )
+
+
+def docx_bytes(text: str | None = "RAG 会先检索资料。") -> bytes:
+    stream = BytesIO()
+    document = WordDocument()
+    if text is not None:
+        document.add_paragraph(text)
+    document.save(stream)
+    return stream.getvalue()
 
 
 class MaterialIngestionTests(unittest.TestCase):
@@ -80,6 +91,90 @@ class MaterialIngestionTests(unittest.TestCase):
                 (root / "pending_uploads" / staged.upload_id / "notes.md").is_file()
             )
             self.assertEqual(sync_calls, [])
+
+    def test_stages_valid_docx_without_calling_index(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sync_calls = []
+            manager = self.make_manager(
+                root,
+                sync_index=lambda chunks: sync_calls.append(chunks),
+            )
+
+            staged = manager.stage_upload(
+                filename="notes.docx",
+                content_type=(
+                    "application/vnd.openxmlformats-officedocument."
+                    "wordprocessingml.document"
+                ),
+                stream=BytesIO(docx_bytes()),
+            )
+
+            self.assertEqual(staged.filename, "notes.docx")
+            self.assertEqual(staged.document_units, 1)
+            self.assertEqual(staged.chunk_count, 1)
+            self.assertEqual(sync_calls, [])
+
+    def test_rejects_spoofed_docx_and_cleans_pending_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = self.make_manager(root)
+
+            with self.assertRaisesRegex(MaterialValidationError, "OOXML ZIP"):
+                manager.stage_upload(
+                    filename="fake.docx",
+                    content_type=(
+                        "application/vnd.openxmlformats-officedocument."
+                        "wordprocessingml.document"
+                    ),
+                    stream=BytesIO(b"this is plain text"),
+                )
+
+            pending = root / "pending_uploads"
+            self.assertFalse(pending.exists() and any(pending.iterdir()))
+
+    def test_rejects_empty_docx_without_leaving_partial_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = self.make_manager(root)
+
+            with self.assertRaisesRegex(MaterialValidationError, "没有可建立索引"):
+                manager.stage_upload(
+                    filename="empty.docx",
+                    content_type="application/octet-stream",
+                    stream=BytesIO(docx_bytes(None)),
+                )
+
+            pending = root / "pending_uploads"
+            self.assertFalse(pending.exists() and any(pending.iterdir()))
+
+    def test_rejects_legacy_doc_with_explicit_message(self) -> None:
+        with self.assertRaisesRegex(MaterialValidationError, r"旧版 \.doc 暂不支持"):
+            validate_material_filename("legacy.doc")
+
+    def test_commits_docx_through_existing_sync_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            captured_chunks = []
+
+            def sync_index(chunks):
+                captured_chunks.extend(chunks)
+                return IndexSyncSummary(added=len(chunks), deleted=0, unchanged=0)
+
+            manager = self.make_manager(root, sync_index=sync_index)
+            staged = manager.stage_upload(
+                filename="notes.docx",
+                content_type="application/octet-stream",
+                stream=BytesIO(docx_bytes("DOCX 复用现有同步链路。")),
+            )
+
+            result = manager.commit_staged(staged.upload_id)
+
+            self.assertEqual(result.added, 1)
+            self.assertEqual(captured_chunks[0].source_type, "docx")
+            self.assertEqual(captured_chunks[0].paragraph_index, 1)
+            self.assertIsNone(captured_chunks[0].page)
+            self.assertTrue((root / "documents" / "notes.docx").is_file())
 
     def test_rejects_oversized_upload_without_leaving_partial_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

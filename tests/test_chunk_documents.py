@@ -1,9 +1,11 @@
 import hashlib
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from docx import Document as WordDocument
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
@@ -17,6 +19,28 @@ from app.chunk_documents import (
     load_material_units,
     split_text,
 )
+from app.evidence import evidence_from_document
+from app.langchain_store import chunks_to_documents
+
+
+def write_docx(
+    path: Path,
+    *,
+    paragraphs: tuple[str, ...] = (),
+    headings: tuple[tuple[str, int], ...] = (),
+    table_rows: tuple[tuple[str, ...], ...] = (),
+) -> None:
+    document = WordDocument()
+    for text, level in headings:
+        document.add_heading(text, level=level)
+    for text in paragraphs:
+        document.add_paragraph(text)
+    if table_rows:
+        table = document.add_table(rows=len(table_rows), cols=len(table_rows[0]))
+        for row_index, row in enumerate(table_rows):
+            for column_index, value in enumerate(row):
+                table.cell(row_index, column_index).text = value
+    document.save(path)
 
 
 def write_text_pdf(path: Path, text: str) -> None:
@@ -42,6 +66,144 @@ def write_text_pdf(path: Path, text: str) -> None:
 
 
 class ChunkDocumentsTests(unittest.TestCase):
+    def test_docx_paragraph_enters_material_units_and_existing_chunker(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            documents_dir = Path(directory)
+            write_docx(
+                documents_dir / "rag.docx",
+                paragraphs=("Embedding 是将文本转换为向量表示的方法。",),
+            )
+
+            units = load_material_units(documents_dir)
+            chunks = build_chunks(units)
+
+        self.assertEqual(len(units), 1)
+        self.assertEqual(units[0].material.source_type, "docx")
+        self.assertEqual(units[0].paragraph_index, 1)
+        self.assertEqual(units[0].source, "rag.docx · 第 1 段")
+        self.assertIn("Embedding", chunks[0].content)
+
+    def test_docx_heading_is_preserved_as_section_for_following_paragraph(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            documents_dir = Path(directory)
+            path = documents_dir / "rag.docx"
+            document = WordDocument()
+            document.add_heading("检索", level=1)
+            document.add_heading("向量召回", level=2)
+            document.add_heading("候选资料", level=3)
+            document.add_paragraph("Retriever 负责从知识库寻找候选资料。")
+            document.save(path)
+
+            units = load_material_units(documents_dir)
+
+        self.assertEqual(units[-1].section, "检索 > 向量召回 > 候选资料")
+        self.assertEqual(units[-1].paragraph_index, 4)
+
+    def test_docx_table_becomes_searchable_text_in_document_order(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            documents_dir = Path(directory)
+            write_docx(
+                documents_dir / "concepts.docx",
+                headings=(("RAG 基础", 1),),
+                table_rows=(("概念", "定义"), ("RAG", "检索增强生成")),
+            )
+
+            units = load_material_units(documents_dir)
+            chunks = build_chunks(units)
+
+        table_unit = next(unit for unit in units if unit.table_index is not None)
+        table_chunk = next(chunk for chunk in chunks if chunk.table_index is not None)
+        self.assertEqual(table_unit.section, "RAG 基础")
+        self.assertEqual(table_unit.source, "concepts.docx · 第 1 个表格")
+        self.assertIn("概念 | 定义", table_chunk.content)
+        self.assertIn("RAG | 检索增强生成", table_chunk.content)
+
+    def test_docx_metadata_reaches_evidence_without_fake_page(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            documents_dir = Path(directory)
+            write_docx(
+                documents_dir / "rag.docx",
+                headings=(("检索基础", 1),),
+                paragraphs=("向量检索会返回候选证据。",),
+            )
+            chunk = build_chunks(load_material_units(documents_dir))[-1]
+
+        document = chunks_to_documents([chunk])[0]
+        evidence = evidence_from_document(document, "S1")
+        self.assertIsNone(chunk.page)
+        self.assertNotIn("page", document.metadata)
+        self.assertEqual(document.metadata["paragraph_index"], 2)
+        self.assertEqual(document.metadata["section"], "检索基础")
+        self.assertIsNone(evidence.page)
+        self.assertIn("section=%E6%A3%80%E7%B4%A2%E5%9F%BA%E7%A1%80", evidence.locator)
+        self.assertIn("paragraph=2&chunk=1", evidence.locator)
+
+    def test_empty_docx_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            documents_dir = Path(directory)
+            write_docx(documents_dir / "empty.docx")
+
+            with self.assertRaisesRegex(DocumentLoadError, "没有可建立索引"):
+                load_material_units(documents_dir)
+
+    def test_corrupted_docx_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            documents_dir = Path(directory)
+            (documents_dir / "broken.docx").write_bytes(b"PK\x03\x04broken")
+
+            with self.assertRaisesRegex(DocumentLoadError, "不是有效|损坏"):
+                load_material_units(documents_dir)
+
+    def test_zip_without_required_ooxml_parts_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            documents_dir = Path(directory)
+            path = documents_dir / "fake.docx"
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("readme.txt", "not a Word package")
+
+            with self.assertRaisesRegex(DocumentLoadError, "缺少必要的 OOXML 结构"):
+                load_material_units(documents_dir)
+
+    def test_docx_repeated_parse_keeps_stable_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            documents_dir = Path(directory)
+            write_docx(documents_dir / "rag.docx", paragraphs=("稳定内容",))
+
+            first = build_chunks(load_material_units(documents_dir))[0]
+            second = build_chunks(load_material_units(documents_dir))[0]
+
+        self.assertEqual(first.material_id, second.material_id)
+        self.assertEqual(first.material_content_hash, second.material_content_hash)
+        self.assertEqual(first.chunk_id, second.chunk_id)
+
+    def test_identical_docx_paragraphs_have_distinct_chunk_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            documents_dir = Path(directory)
+            write_docx(
+                documents_dir / "rag.docx",
+                paragraphs=("相同内容", "相同内容"),
+            )
+
+            chunks = build_chunks(load_material_units(documents_dir))
+
+        self.assertEqual([chunk.paragraph_index for chunk in chunks], [1, 2])
+        self.assertNotEqual(chunks[0].chunk_id, chunks[1].chunk_id)
+
+    def test_docx_content_change_keeps_material_identity_and_changes_hashes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            documents_dir = Path(directory)
+            path = documents_dir / "rag.docx"
+            write_docx(path, paragraphs=("原始内容",))
+            original = build_chunks(load_material_units(documents_dir))[0]
+
+            write_docx(path, paragraphs=("修改后的内容",))
+            changed = build_chunks(load_material_units(documents_dir))[0]
+
+        self.assertEqual(original.material_id, changed.material_id)
+        self.assertNotEqual(original.material_content_hash, changed.material_content_hash)
+        self.assertNotEqual(original.content_hash, changed.content_hash)
+        self.assertNotEqual(original.chunk_id, changed.chunk_id)
+
     def test_load_documents_uses_web_url_as_source_and_removes_marker(self) -> None:
         body = "# RAG\n\n正文"
         metadata = WebSourceMetadata(

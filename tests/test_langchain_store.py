@@ -56,6 +56,17 @@ class LangChainStoreTests(unittest.TestCase):
         )
         self.assertFalse(source_belongs_to_material(source, "other.md"))
 
+    def test_docx_paragraph_and_table_sources_belong_only_to_exact_material(self) -> None:
+        self.assertTrue(
+            source_belongs_to_material("notes.docx · 第 2 段", "notes.docx")
+        )
+        self.assertTrue(
+            source_belongs_to_material("notes.docx · 第 1 个表格", "notes.docx")
+        )
+        self.assertFalse(
+            source_belongs_to_material("notes-extra.docx · 第 2 段", "notes.docx")
+        )
+
     @patch("app.langchain_store.OpenAIEmbeddings")
     def test_configures_bailian_embedding_batch_limit(
         self,

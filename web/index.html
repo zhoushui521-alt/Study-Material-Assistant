@@ -17,7 +17,7 @@
           <p class="eyebrow">STUDY MATERIAL RAG</p>
           <h1 id="page-title">问自己的资料，<br>得到有出处的答案。</h1>
           <p class="lede">
-            从已经索引的 TXT、Markdown 和 PDF 中检索证据。资料不足时，助手会明确拒答。
+            从已经索引的 TXT、Markdown、DOCX 和 PDF 中检索证据。资料不足时，助手会明确拒答。
           </p>
         </div>
 
@@ -59,7 +59,7 @@
                   id="material-file"
                   name="file"
                   type="file"
-                  accept=".txt,.md,.pdf,text/plain,text/markdown,application/pdf"
+                  accept=".txt,.md,.docx,.pdf,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf"
                   required
                 >
               </div>
@@ -76,7 +76,7 @@
                 本地校验与解析
               </button>
               <p>
-                支持 UTF-8 TXT、Markdown 和带文字层 PDF；单文件最大 10 MiB，
+                支持 UTF-8 TXT、Markdown、DOCX 和带文字层 PDF；单文件最大 10 MiB，
                 PDF 最多 200 页，预计最多 20 个 Embedding 批次。
               </p>
             </div>

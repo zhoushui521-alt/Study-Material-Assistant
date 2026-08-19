@@ -169,6 +169,10 @@ def chunks_to_documents(chunks: list[DocumentChunk]) -> list[Document]:
             metadata["page"] = chunk.page
         if chunk.section is not None:
             metadata["section"] = chunk.section
+        if chunk.paragraph_index is not None:
+            metadata["paragraph_index"] = chunk.paragraph_index
+        if chunk.table_index is not None:
+            metadata["table_index"] = chunk.table_index
         if chunk.canonical_url is not None:
             metadata["canonical_url"] = chunk.canonical_url
         documents.append(Document(page_content=chunk.content, metadata=metadata))
@@ -303,9 +307,22 @@ def source_belongs_to_material(source: object, filename: str) -> bool:
         f"{filename} · 网页：https://"
     ):
         return True
-    if Path(filename).suffix.lower() != ".pdf":
-        return False
-    return re.fullmatch(rf"{re.escape(filename)} · 第 [1-9][0-9]* 页", source) is not None
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".pdf":
+        return (
+            re.fullmatch(rf"{re.escape(filename)} · 第 [1-9][0-9]* 页", source)
+            is not None
+        )
+    if suffix == ".docx":
+        return (
+            re.fullmatch(
+                rf"{re.escape(filename)} · 第 [1-9][0-9]* (?:段|个表格)",
+                source,
+                re.IGNORECASE,
+            )
+            is not None
+        )
+    return False
 
 
 def delete_material_documents(
