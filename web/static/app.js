@@ -208,7 +208,7 @@ function renderBatchStageResult(payload) {
   const totalChunks = Number(payload.total_chunks) || 0;
   const totalBatches = Number(payload.embedding_batch_count) || 0;
   stageCost.textContent = staged.length
-    ? `成功文件共 ${totalChunks} 个文本块，按当前配置约 ${totalBatches} 个 Embedding 批次（单次上限 20）。`
+    ? `成功文件共 ${totalChunks} 个文本块，按当前配置约 ${totalBatches} 个 Embedding 批次（单次上限 60）。`
     : "没有可确认写入索引的文件。";
   confirmIndexButton.hidden = staged.length === 0;
   stageSummary.hidden = false;
@@ -358,7 +358,7 @@ async function previewWebMaterial() {
     stageDetails.textContent = `解析为 ${payload.document_units} 个资料单元、${payload.chunk_count} 个文本块。`;
     stageFileResults.replaceChildren();
     confirmIndexButton.hidden = false;
-    stageCost.textContent = `网页预览不会产生模型费用；确认后约 ${payload.embedding_batch_count} 个 Embedding 批次（单次上限 20）。`;
+    stageCost.textContent = `网页预览不会产生模型费用；确认后约 ${payload.embedding_batch_count} 个 Embedding 批次（单次上限 60）。`;
     stageSummary.hidden = false;
 
     webPreviewTitle.textContent = String(payload.title || "网页资料");

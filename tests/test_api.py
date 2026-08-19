@@ -117,6 +117,7 @@ class APITests(unittest.TestCase):
         )
         self.assertIn("multiple", page.text)
         self.assertIn('name="files"', page.text)
+        self.assertIn("预计最多 60 个 Embedding 批次", page.text)
         self.assertIn("default-src 'self'", page.headers["content-security-policy"])
         self.assertEqual(page.headers["referrer-policy"], "no-referrer")
 
@@ -130,6 +131,7 @@ class APITests(unittest.TestCase):
         self.assertIn('fetch("/api/ask"', script.text)
         self.assertIn('fetch("/api/materials/stage-batch"', script.text)
         self.assertIn('"/api/materials/batch/index"', script.text)
+        self.assertIn("单次上限 60", script.text)
         self.assertIn("textContent", script.text)
         self.assertNotIn("innerHTML", script.text)
         create_service.assert_not_called()
@@ -822,7 +824,7 @@ class APITests(unittest.TestCase):
 
     def test_index_rejects_over_budget_staged_upload_before_commit(self) -> None:
         manager = Mock(spec=MaterialManager)
-        manager.estimate_index_batches.return_value = 21
+        manager.estimate_index_batches.return_value = 61
         app.dependency_overrides[get_material_manager] = lambda: manager
 
         with TestClient(app) as client:

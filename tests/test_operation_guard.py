@@ -1,6 +1,7 @@
 import unittest
 
 from app.operation_guard import (
+    DEFAULT_OPERATION_POLICIES,
     OperationBudgetExceededError,
     OperationBusyError,
     OperationGuard,
@@ -18,6 +19,12 @@ class MutableClock:
 
 
 class OperationGuardTests(unittest.TestCase):
+    def test_default_index_policy_uses_configured_cost_boundaries(self) -> None:
+        policy = DEFAULT_OPERATION_POLICIES["index"]
+
+        self.assertEqual(policy.max_units_per_operation, 60)
+        self.assertEqual(policy.max_units_per_process, 200)
+
     def make_guard(
         self,
         clock: MutableClock,
