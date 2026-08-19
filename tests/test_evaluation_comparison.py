@@ -8,6 +8,7 @@ from app.compare_rag_reports import main
 from app.evaluation_comparison import (
     EvaluationComparisonError,
     compare_evaluation_reports,
+    compare_retrieval_reports,
     load_evaluation_report,
     write_comparison_report,
 )
@@ -22,6 +23,32 @@ def report(dataset_sha: str, cases: list[dict]) -> dict:
             "sha256": dataset_sha,
         },
         "cases": cases,
+    }
+
+
+def retrieval_report(
+    dataset_sha: str,
+    *,
+    metric: float,
+    failure: str | None = None,
+) -> dict:
+    return {
+        "report_schema_version": 2,
+        "evaluation_type": "retrieval",
+        "evaluation_dataset": {
+            "file": "retrieval_cases.json",
+            "dataset_version": "retrieval-v1",
+            "sha256": dataset_sha,
+        },
+        "aggregate_metrics": {"raw_recall_at_5": metric},
+        "per_case_results": [
+            {
+                "case_id": "case",
+                "metrics": {"raw_recall_at_5": metric},
+                "failure_category": failure,
+                "trace": {"latency_ms": {"total_retrieval": 5}},
+            }
+        ],
     }
 
 
@@ -109,6 +136,30 @@ class EvaluationComparisonTests(unittest.TestCase):
                 write_comparison_report({"warning": "不能覆盖"}, output)
 
             self.assertIn("中文提示", output.read_text(encoding="utf-8"))
+
+    def test_compares_retrieval_metrics_and_failure_changes(self) -> None:
+        comparison = compare_retrieval_reports(
+            retrieval_report("same", metric=0.5),
+            retrieval_report("same", metric=0.75, failure="filtering_failure"),
+        )
+
+        self.assertEqual(comparison["comparison_schema_version"], 2)
+        self.assertEqual(comparison["metric_changes"]["raw_recall_at_5"]["delta"], 0.25)
+        self.assertEqual(comparison["newly_failed"], ["case"])
+        self.assertTrue(comparison["totals_directly_comparable"])
+
+    def test_dispatches_retrieval_reports_and_rejects_mixed_report_types(self) -> None:
+        comparison = compare_evaluation_reports(
+            retrieval_report("same", metric=0.5),
+            retrieval_report("same", metric=0.6),
+        )
+
+        self.assertEqual(comparison["evaluation_type"], "retrieval")
+        with self.assertRaisesRegex(EvaluationComparisonError, "不能直接比较"):
+            compare_evaluation_reports(
+                report("same", []),
+                retrieval_report("same", metric=0.6),
+            )
 
     def test_cli_returns_one_when_current_report_has_new_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

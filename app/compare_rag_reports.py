@@ -1,4 +1,4 @@
-"""比较两份已有 RAG 评测报告；不会调用 Embedding 或 Chat API。"""
+"""比较两份同类型 RAG 或 Retrieval 报告；不会调用任何模型 API。"""
 
 import argparse
 import json
@@ -17,7 +17,7 @@ else:
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="比较两份 RAG JSON 评测报告。")
+    parser = argparse.ArgumentParser(description="比较两份同类型 Evaluation JSON 报告。")
     parser.add_argument("baseline", type=Path, help="基线评测报告路径。")
     parser.add_argument("current", type=Path, help="当前评测报告路径。")
     parser.add_argument("--output", type=Path, help="可选的对比 JSON 保存路径。")

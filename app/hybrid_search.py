@@ -25,6 +25,7 @@ class HybridSearchResult:
     """一条包含向量分、关键词覆盖率和混合分的检索结果。"""
 
     document: Document
+    raw_rank: int
     vector_score: float
     keyword_score: float
     combined_score: float
@@ -39,6 +40,45 @@ def keyword_coverage(question: str, text: str) -> float:
     normalized_text = text.casefold()
     matched_count = sum(term in normalized_text for term in terms)
     return matched_count / len(terms)
+
+
+def rank_vector_candidates(
+    question: str,
+    vector_results: list[tuple[Document, float]],
+    *,
+    relevance_threshold: float = DEFAULT_RELEVANCE_THRESHOLD,
+    keyword_weight: float = DEFAULT_KEYWORD_WEIGHT,
+) -> list[HybridSearchResult]:
+    """按当前生产公式过滤并重排已经召回的向量候选。"""
+    if not 0.0 <= relevance_threshold <= 1.0:
+        raise ValueError("相关度阈值必须在 0 到 1 之间。")
+    if not 0.0 <= keyword_weight <= 1.0:
+        raise ValueError("关键词权重必须在 0 到 1 之间。")
+
+    hybrid_results = []
+    for raw_rank, (document, vector_score) in enumerate(vector_results, start=1):
+        if vector_score < relevance_threshold:
+            continue
+        keyword_score = keyword_coverage(question, document.page_content)
+        combined_score = (
+            (1.0 - keyword_weight) * vector_score
+            + keyword_weight * keyword_score
+        )
+        hybrid_results.append(
+            HybridSearchResult(
+                document=document,
+                raw_rank=raw_rank,
+                vector_score=vector_score,
+                keyword_score=keyword_score,
+                combined_score=combined_score,
+            )
+        )
+
+    return sorted(
+        hybrid_results,
+        key=lambda result: (result.combined_score, result.vector_score),
+        reverse=True,
+    )
 
 
 def hybrid_search_vector_store(
@@ -64,28 +104,11 @@ def hybrid_search_vector_store(
         vector_store,
         limit=max(limit, candidate_limit),
     )
-    hybrid_results = []
-    for document, vector_score in vector_results:
-        if vector_score < relevance_threshold:
-            continue
-        keyword_score = keyword_coverage(question, document.page_content)
-        combined_score = (
-            (1.0 - keyword_weight) * vector_score
-            + keyword_weight * keyword_score
-        )
-        hybrid_results.append(
-            HybridSearchResult(
-                document=document,
-                vector_score=vector_score,
-                keyword_score=keyword_score,
-                combined_score=combined_score,
-            )
-        )
-
-    return sorted(
-        hybrid_results,
-        key=lambda result: (result.combined_score, result.vector_score),
-        reverse=True,
+    return rank_vector_candidates(
+        question,
+        vector_results,
+        relevance_threshold=relevance_threshold,
+        keyword_weight=keyword_weight,
     )[:limit]
 
 

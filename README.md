@@ -160,6 +160,41 @@ python -m app.evaluate_rag --confirm-api-cost --results-dir <目录>
 残留 LaTeX 命令的问题已在针对性格式修复后的真实复测中通过。固定案例只能证明
 当前版本通过这 10 个问题，不能替代更大评测集、人工检查或未来版本复测。
 
+## Stage 2：独立 Retrieval Evaluation 与 Trace
+
+`evaluation/retrieval_cases.json` 是与上述端到端问答 heuristic 分离的 Retrieval
+Dataset。每个可回答案例分别保存不依赖当前切块编号的 `Stable Gold Meaning`，以及
+可随 Chunker 更新的 `Current Chunk Mapping`（`chunk_id`、`material_id` 和
+`content_hash`）；`legacy_chunk_index` 只用于人工定位，不参与 Gold 身份判定。
+
+`app/retrieval_evaluation.py` 复用当前生产检索公式，并以 Evaluation 专用结构化 Trace
+记录 Raw Vector Candidates、0.25 阈值过滤、80/20 Hybrid Ranking、Top 3 Seed、同源
+±2 Adjacent Expansion 和最多 8 块 Final Context。Trace 只记录身份、分数、排名、原因、
+大小和本地耗时，不写入候选正文；没有可靠 tokenizer 时 `token_size` 明确为 `null`。
+报告提供 Raw/Ranked Recall@1/3/5/10、MRR、nDCG@5、Final Context Recall 和 Context
+Precision，并把 Recall、Filtering、Ranking、Context Construction 与 Unanswerable
+Handling Failure 分开。单 Gold 案例上的 nDCG 与 MRR 信息高度重合，主要在 Multi-Gold
+案例中提供额外排序信息。
+
+以下命令默认只显示费用边界，不打开索引、不调用 API：
+
+```powershell
+python -m app.evaluate_retrieval
+```
+
+显式确认后，每个案例调用一次真实 Query Embedding，读取当前 Chroma 并生成唯一 JSON
+报告；不调用 ChatModel，不写索引，不迁移 legacy index，也不自动补 Manifest：
+
+```powershell
+python -m app.evaluate_retrieval --confirm-query-embedding-cost
+```
+
+Stage 2 可以确定性验证 Citation ID 是否存在于本次 Evidence Map；Citation Coverage
+仍需要 Claim 标注，Citation Support 仍需要人工或经授权的 Judge。有效 Citation ID
+不等于 Evidence 真正支持对应 Claim。当前仅完成 Fixture/Mock 基础设施验证，尚未在本
+阶段执行真实 Query Embedding，因此没有新的真实 Retrieval Baseline，也不能据此决定
+Stage 3 是否加入 BM25、Reranker、Query Rewrite 或调整 Chunk、阈值、Top-K 和权重。
+
 ## 最小 FastAPI 服务
 
 启动本地服务：

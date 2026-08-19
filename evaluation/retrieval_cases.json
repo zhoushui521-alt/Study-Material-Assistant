@@ -1,0 +1,355 @@
+{
+  "evaluation_version": 1,
+  "dataset_version": "study-material-retrieval-v1",
+  "description": "Stage 2 独立 Retrieval Dataset。Stable Gold Meaning 描述原资料事实，Current Chunk Mapping 只描述当前 Chunker 映射；legacy_chunk_index 仅用于人工定位，不作为 Gold 身份。",
+  "cases": [
+    {
+      "case_id": "rag_chunking_reason",
+      "dataset_version": "study-material-retrieval-v1",
+      "question": "学习资料为什么需要切分成较小的文本块？",
+      "answerable": true,
+      "case_types": ["explicit_fact", "citation_sensitive"],
+      "expected_scope": {
+        "material_ids": ["8e6450ac515849397e8829348b994dcfd4c62d59501fc2cd76697dba2ba59601"],
+        "sources": ["rag-intro.md"]
+      },
+      "stable_gold_meanings": [
+        {
+          "gold_id": "rag_chunking_reason_fact",
+          "material_id": "8e6450ac515849397e8829348b994dcfd4c62d59501fc2cd76697dba2ba59601",
+          "source": "rag-intro.md",
+          "locator": "rag-intro.md",
+          "text_span": "整份资料可能太长，也会包含很多与问题无关的信息；切分后可以只挑选最相关的几段。",
+          "page": null,
+          "section": null
+        }
+      ],
+      "current_chunk_mappings": [
+        {
+          "gold_ids": ["rag_chunking_reason_fact"],
+          "chunk_id": "315abb3f389e01fd785140d4db87a972a55f253f82e45f1427025e1f1332d2a6",
+          "material_id": "8e6450ac515849397e8829348b994dcfd4c62d59501fc2cd76697dba2ba59601",
+          "content_hash": "c51ec19c4451a0922f8e97063718030fa1d7a9f1a3158b25ea69c17981bfd9e2",
+          "source": "rag-intro.md",
+          "page": null,
+          "section": null,
+          "legacy_chunk_index": 2
+        }
+      ],
+      "annotation_notes": "明确事实型；用于检查旧评测来源判断迁移到稳定 Chunk ID 后的行为。"
+    },
+    {
+      "case_id": "chroma_incremental_embedding",
+      "dataset_version": "study-material-retrieval-v1",
+      "question": "资料没有变化时，为什么增量同步不需要重新调用 Embedding？",
+      "answerable": true,
+      "case_types": ["semantic_paraphrase", "exact_term"],
+      "expected_scope": {
+        "material_ids": ["45370b8e2bdd4c08bcee421e77190a31316b2862f82b7bcbf8dc6fdfb22222f3"],
+        "sources": ["chroma-intro.md"]
+      },
+      "stable_gold_meanings": [
+        {
+          "gold_id": "chroma_incremental_reuse_fact",
+          "material_id": "45370b8e2bdd4c08bcee421e77190a31316b2862f82b7bcbf8dc6fdfb22222f3",
+          "source": "chroma-intro.md",
+          "locator": "chroma-intro.md",
+          "text_span": "资料没有变化时复用已有向量，只有新增或修改的文本块才重新调用 Embedding。",
+          "page": null,
+          "section": null
+        }
+      ],
+      "current_chunk_mappings": [
+        {
+          "gold_ids": ["chroma_incremental_reuse_fact"],
+          "chunk_id": "325fbe3e8b0331e77ff3fa831c7ad892e7ad4ef66337d5b7c1de017df81275ec",
+          "material_id": "45370b8e2bdd4c08bcee421e77190a31316b2862f82b7bcbf8dc6fdfb22222f3",
+          "content_hash": "55bc5b463eed2bfbd30303cf109c7d2f026346ec23df20da6ed7c96fa44517b7",
+          "source": "chroma-intro.md",
+          "page": null,
+          "section": null,
+          "legacy_chunk_index": 1
+        }
+      ],
+      "annotation_notes": "语义表达与专有名词混合；Gold 是增量复用事实，不是 Embedding 字面命中本身。"
+    },
+    {
+      "case_id": "cauchy_properties",
+      "dataset_version": "study-material-retrieval-v1",
+      "question": "柯西分布有哪些主要特点？",
+      "answerable": true,
+      "case_types": ["explicit_fact", "adjacent_content"],
+      "expected_scope": {
+        "material_ids": ["9b73e970e4b0a9cd59bfc32e2fe4b34be223c3b92a71ced24220a96f6d745874"],
+        "sources": ["第八章.pdf · 第 3 页"]
+      },
+      "stable_gold_meanings": [
+        {
+          "gold_id": "cauchy_properties_fact",
+          "material_id": "9b73e970e4b0a9cd59bfc32e2fe4b34be223c3b92a71ced24220a96f6d745874",
+          "source": "第八章.pdf · 第 3 页",
+          "locator": "第八章.pdf#page=3",
+          "text_span": "柯西分布具有厚尾特性，均值和方差不存在。",
+          "page": 3,
+          "section": "8.1.3.3 柯西分布的性质"
+        }
+      ],
+      "current_chunk_mappings": [
+        {
+          "gold_ids": ["cauchy_properties_fact"],
+          "chunk_id": "9df551b5b95f9be91539968d8c037e0e1d6427dda0196cf30adc2c3dbe8f9622",
+          "material_id": "9b73e970e4b0a9cd59bfc32e2fe4b34be223c3b92a71ced24220a96f6d745874",
+          "content_hash": "c7d7e24225984e283c7515f3a45117bd3850be8f9690f4ba44d3cc067035646f",
+          "source": "第八章.pdf · 第 3 页",
+          "page": 3,
+          "section": null,
+          "legacy_chunk_index": 3
+        }
+      ],
+      "annotation_notes": "PDF 概念题；相邻块可能补充特征函数，但只有映射中的 Chunk 算 Relevant。"
+    },
+    {
+      "case_id": "cauchy_relationships",
+      "dataset_version": "study-material-retrieval-v1",
+      "question": "柯西分布与学生 t 分布及标准正态变量之比有什么关系？",
+      "answerable": true,
+      "case_types": ["semantic_paraphrase", "similar_material_distractor"],
+      "expected_scope": {
+        "material_ids": ["9b73e970e4b0a9cd59bfc32e2fe4b34be223c3b92a71ced24220a96f6d745874"],
+        "sources": ["第八章.pdf · 第 4 页"]
+      },
+      "stable_gold_meanings": [
+        {
+          "gold_id": "cauchy_relationships_fact",
+          "material_id": "9b73e970e4b0a9cd59bfc32e2fe4b34be223c3b92a71ced24220a96f6d745874",
+          "source": "第八章.pdf · 第 4 页",
+          "locator": "第八章.pdf#page=4",
+          "text_span": "柯西分布是自由度为 1 的学生 t 分布，也是两个独立标准正态变量比率的分布。",
+          "page": 4,
+          "section": "8.1.3.5 结论"
+        }
+      ],
+      "current_chunk_mappings": [
+        {
+          "gold_ids": ["cauchy_relationships_fact"],
+          "chunk_id": "fca65911fc371a39879bf47eaefe2e70d35cdc986f05fc01b39e1ed94591fd83",
+          "material_id": "9b73e970e4b0a9cd59bfc32e2fe4b34be223c3b92a71ced24220a96f6d745874",
+          "content_hash": "fa4e05e9e687ad1adbedfae06eb65f4e77ba45236df55cb68c10109a4674743d",
+          "source": "第八章.pdf · 第 4 页",
+          "page": 4,
+          "section": null,
+          "legacy_chunk_index": 1
+        }
+      ],
+      "annotation_notes": "相近分布干扰题；用于观察柯西、Student t 与正态相关块的排序。"
+    },
+    {
+      "case_id": "dirichlet_definition",
+      "dataset_version": "study-material-retrieval-v1",
+      "question": "狄利克雷分布定义在什么空间，变量满足什么约束，并与多项式分布有什么关系？",
+      "answerable": true,
+      "case_types": ["exact_term", "citation_sensitive"],
+      "expected_scope": {
+        "material_ids": ["9b73e970e4b0a9cd59bfc32e2fe4b34be223c3b92a71ced24220a96f6d745874"],
+        "sources": ["第八章.pdf · 第 4 页"]
+      },
+      "stable_gold_meanings": [
+        {
+          "gold_id": "dirichlet_definition_fact",
+          "material_id": "9b73e970e4b0a9cd59bfc32e2fe4b34be223c3b92a71ced24220a96f6d745874",
+          "source": "第八章.pdf · 第 4 页",
+          "locator": "第八章.pdf#page=4",
+          "text_span": "狄利克雷分布定义在 simplex 空间，变量非负且和为 1，是多项式分布的共轭先验。",
+          "page": 4,
+          "section": "8.2 狄利克雷分布"
+        }
+      ],
+      "current_chunk_mappings": [
+        {
+          "gold_ids": ["dirichlet_definition_fact"],
+          "chunk_id": "8006a059686c54a3e3ff1bcb5a6a67f8cb4dab3c5b14f20d2ee52f027a9a99fb",
+          "material_id": "9b73e970e4b0a9cd59bfc32e2fe4b34be223c3b92a71ced24220a96f6d745874",
+          "content_hash": "5ce71df5db02ec16728ea5161508381c74bb2d80f915abb7470737ab42c0516e",
+          "source": "第八章.pdf · 第 4 页",
+          "page": 4,
+          "section": null,
+          "legacy_chunk_index": 6
+        }
+      ],
+      "annotation_notes": "专有名词与约束条件题；定位到定义事实，而非相邻的柯西示例。"
+    },
+    {
+      "case_id": "multinomial_cross_chunk_moments",
+      "dataset_version": "study-material-retrieval-v1",
+      "question": "多项式分布中，单个类别计数的边缘分布是什么？其期望、方差以及不同类别计数间的协方差分别是什么？",
+      "answerable": true,
+      "case_types": ["cross_chunk", "multi_gold", "adjacent_content"],
+      "expected_scope": {
+        "material_ids": ["9b73e970e4b0a9cd59bfc32e2fe4b34be223c3b92a71ced24220a96f6d745874"],
+        "sources": ["第八章.pdf · 第 13 页"]
+      },
+      "stable_gold_meanings": [
+        {
+          "gold_id": "multinomial_marginal_fact",
+          "material_id": "9b73e970e4b0a9cd59bfc32e2fe4b34be223c3b92a71ced24220a96f6d745874",
+          "source": "第八章.pdf · 第 13 页",
+          "locator": "第八章.pdf#page=13",
+          "text_span": "任意类别计数的边缘分布是二项分布。",
+          "page": 13,
+          "section": "多项式分布边缘分布"
+        },
+        {
+          "gold_id": "multinomial_moments_fact",
+          "material_id": "9b73e970e4b0a9cd59bfc32e2fe4b34be223c3b92a71ced24220a96f6d745874",
+          "source": "第八章.pdf · 第 13 页",
+          "locator": "第八章.pdf#page=13",
+          "text_span": "类别计数的期望、方差以及不同类别计数的协方差公式。",
+          "page": 13,
+          "section": "多项式分布性质总结"
+        }
+      ],
+      "current_chunk_mappings": [
+        {
+          "gold_ids": ["multinomial_marginal_fact"],
+          "chunk_id": "e1bd0a3ec297afb99d199386a376957df0120c28af65491e8e9253f697730917",
+          "material_id": "9b73e970e4b0a9cd59bfc32e2fe4b34be223c3b92a71ced24220a96f6d745874",
+          "content_hash": "7d93b639caaaa4318dda88cc7b44419a8b03474b98eab6c4e8b06cca1b49c265",
+          "source": "第八章.pdf · 第 13 页",
+          "page": 13,
+          "section": null,
+          "legacy_chunk_index": 1
+        },
+        {
+          "gold_ids": ["multinomial_moments_fact"],
+          "chunk_id": "b1a23d798237bf45f67ea77171cea3b7e993799b19b55ec7a395cb292a7f09ef",
+          "material_id": "9b73e970e4b0a9cd59bfc32e2fe4b34be223c3b92a71ced24220a96f6d745874",
+          "content_hash": "2b102754aa07c2c698c27b30df101ed8955912242036cc1bc14548f3aa253ce1",
+          "source": "第八章.pdf · 第 13 页",
+          "page": 13,
+          "section": null,
+          "legacy_chunk_index": 3
+        }
+      ],
+      "annotation_notes": "唯一 Multi-Gold 跨块案例；Recall 按两个 Gold 的覆盖比例计算，邻接块只有映射中的两个算 Relevant。"
+    },
+    {
+      "case_id": "student_t_suitability",
+      "dataset_version": "study-material-retrieval-v1",
+      "question": "学生 t 分布为什么适合小样本场景，自由度有什么作用？",
+      "answerable": true,
+      "case_types": ["semantic_paraphrase", "explicit_fact"],
+      "expected_scope": {
+        "material_ids": ["9b73e970e4b0a9cd59bfc32e2fe4b34be223c3b92a71ced24220a96f6d745874"],
+        "sources": ["第八章.pdf · 第 14 页"]
+      },
+      "stable_gold_meanings": [
+        {
+          "gold_id": "student_t_suitability_fact",
+          "material_id": "9b73e970e4b0a9cd59bfc32e2fe4b34be223c3b92a71ced24220a96f6d745874",
+          "source": "第八章.pdf · 第 14 页",
+          "locator": "第八章.pdf#page=14",
+          "text_span": "学生 t 分布适用于小样本，对异常值稳健，自由度控制尾部厚度。",
+          "page": 14,
+          "section": "8.4 学生 t 分布"
+        }
+      ],
+      "current_chunk_mappings": [
+        {
+          "gold_ids": ["student_t_suitability_fact"],
+          "chunk_id": "4876e99add958a79edba95de009c13883609a48fd952f0348148334fa5d52b30",
+          "material_id": "9b73e970e4b0a9cd59bfc32e2fe4b34be223c3b92a71ced24220a96f6d745874",
+          "content_hash": "f4da1dcdf745ff0283c2ed94c1bf786a4f4757946b8fc758a40b225866c6544c",
+          "source": "第八章.pdf · 第 14 页",
+          "page": 14,
+          "section": null,
+          "legacy_chunk_index": 2
+        }
+      ],
+      "annotation_notes": "语义题；用于区分 Student t 自身事实与柯西分布中的 t 分布关系。"
+    },
+    {
+      "case_id": "wishart_definition",
+      "dataset_version": "study-material-retrieval-v1",
+      "question": "威沙特分布描述什么随机量，主要用于什么问题？",
+      "answerable": true,
+      "case_types": ["exact_term", "similar_material_distractor"],
+      "expected_scope": {
+        "material_ids": ["9b73e970e4b0a9cd59bfc32e2fe4b34be223c3b92a71ced24220a96f6d745874"],
+        "sources": ["第八章.pdf · 第 17 页"]
+      },
+      "stable_gold_meanings": [
+        {
+          "gold_id": "wishart_definition_fact",
+          "material_id": "9b73e970e4b0a9cd59bfc32e2fe4b34be223c3b92a71ced24220a96f6d745874",
+          "source": "第八章.pdf · 第 17 页",
+          "locator": "第八章.pdf#page=17",
+          "text_span": "威沙特分布描述多元正态分布样本协方差矩阵的分布，是协方差估计的基础。",
+          "page": 17,
+          "section": "8.5 威沙特分布"
+        }
+      ],
+      "current_chunk_mappings": [
+        {
+          "gold_ids": ["wishart_definition_fact"],
+          "chunk_id": "4758f73e79877653c02112ae2fa3f907896b1b28484cb578c1fabcbad171487c",
+          "material_id": "9b73e970e4b0a9cd59bfc32e2fe4b34be223c3b92a71ced24220a96f6d745874",
+          "content_hash": "703cb92743e207600c61471426449539e60f46ebfb996098dde257ff18d9cfed",
+          "source": "第八章.pdf · 第 17 页",
+          "page": 17,
+          "section": null,
+          "legacy_chunk_index": 4
+        }
+      ],
+      "annotation_notes": "与逆威沙特相近的专有名词干扰题。"
+    },
+    {
+      "case_id": "inverse_wishart_definition",
+      "dataset_version": "study-material-retrieval-v1",
+      "question": "逆威沙特分布与威沙特分布是什么关系，通常用在什么场景？",
+      "answerable": true,
+      "case_types": ["exact_term", "similar_material_distractor", "citation_sensitive"],
+      "expected_scope": {
+        "material_ids": ["9b73e970e4b0a9cd59bfc32e2fe4b34be223c3b92a71ced24220a96f6d745874"],
+        "sources": ["第八章.pdf · 第 20 页"]
+      },
+      "stable_gold_meanings": [
+        {
+          "gold_id": "inverse_wishart_definition_fact",
+          "material_id": "9b73e970e4b0a9cd59bfc32e2fe4b34be223c3b92a71ced24220a96f6d745874",
+          "source": "第八章.pdf · 第 20 页",
+          "locator": "第八章.pdf#page=20",
+          "text_span": "逆威沙特分布是威沙特分布的逆变换，常用作贝叶斯推断中协方差矩阵的先验。",
+          "page": 20,
+          "section": "8.6 逆威沙特分布"
+        }
+      ],
+      "current_chunk_mappings": [
+        {
+          "gold_ids": ["inverse_wishart_definition_fact"],
+          "chunk_id": "e864f7fbc23dc3acd5d6b3c8f2dce85d4244b47aff8ce02b19f498a22cbc2555",
+          "material_id": "9b73e970e4b0a9cd59bfc32e2fe4b34be223c3b92a71ced24220a96f6d745874",
+          "content_hash": "8d25e7a19a3c773893aa38271430e224e7aae4e3792a4ff62b6d7d94c50e3a95",
+          "source": "第八章.pdf · 第 20 页",
+          "page": 20,
+          "section": null,
+          "legacy_chunk_index": 4
+        }
+      ],
+      "annotation_notes": "Citation-sensitive 相近概念题；有效 Citation ID 仍不等于该证据支持回答。"
+    },
+    {
+      "case_id": "mysql_out_of_scope",
+      "dataset_version": "study-material-retrieval-v1",
+      "question": "MySQL 的事务隔离级别有哪些？",
+      "answerable": false,
+      "case_types": ["unanswerable"],
+      "expected_scope": {
+        "material_ids": [],
+        "sources": []
+      },
+      "stable_gold_meanings": [],
+      "current_chunk_mappings": [],
+      "annotation_notes": "不可回答案例不伪造 Gold；Final Context 为空时 Unanswerable Context Precision 记为 1，否则记为 0。"
+    }
+  ]
+}
