@@ -54,12 +54,13 @@
           <form id="upload-form" class="upload-form" enctype="multipart/form-data">
             <div class="upload-fields">
               <div>
-                <label for="material-file">资料文件</label>
+                <label for="material-file">资料文件（可多选）</label>
                 <input
                   id="material-file"
-                  name="file"
+                  name="files"
                   type="file"
                   accept=".txt,.md,.docx,.pdf,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf"
+                  multiple
                   required
                 >
               </div>
@@ -71,13 +72,17 @@
                 </select>
               </div>
             </div>
+            <div class="selected-files" id="selected-files" aria-live="polite" hidden>
+              <strong id="selected-file-count"></strong>
+              <ul id="selected-file-list"></ul>
+            </div>
             <div class="material-actions">
               <button id="stage-button" class="secondary-button" type="submit">
                 本地校验与解析
               </button>
               <p>
-                支持 UTF-8 TXT、Markdown、DOCX 和带文字层 PDF；单文件最大 10 MiB，
-                PDF 最多 200 页，预计最多 20 个 Embedding 批次。
+                支持 UTF-8 TXT、Markdown、DOCX 和带文字层 PDF；单次最多 20 个文件，
+                单文件最大 10 MiB，预计最多 20 个 Embedding 批次。
               </p>
             </div>
           </form>
@@ -138,6 +143,7 @@
             <div>
               <strong id="stage-filename"></strong>
               <p id="stage-details"></p>
+              <ul id="stage-file-results"></ul>
               <p class="cost-warning" id="stage-cost"></p>
             </div>
             <button id="confirm-index-button" type="button">确认费用并写入索引</button>

@@ -23,11 +23,14 @@ from app.api import (
 from app.langchain_rag import LangChainRAGError, NO_EVIDENCE_ANSWER, RAGAnswer
 from app.evidence import Citation
 from app.material_ingestion import (
+    BatchMaterialSyncResult,
+    BatchStageResult,
     IndexSyncSummary,
     MaterialDeleteResult,
     MaterialManager,
     MaterialRollbackError,
     MaterialSyncResult,
+    StagedMaterialFailure,
     StagedMaterial,
 )
 from app.operation_guard import OperationGuard, OperationPolicy
@@ -112,6 +115,8 @@ class APITests(unittest.TestCase):
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             page.text,
         )
+        self.assertIn("multiple", page.text)
+        self.assertIn('name="files"', page.text)
         self.assertIn("default-src 'self'", page.headers["content-security-policy"])
         self.assertEqual(page.headers["referrer-policy"], "no-referrer")
 
@@ -123,6 +128,8 @@ class APITests(unittest.TestCase):
         self.assertIn("javascript", script.headers["content-type"])
         self.assertIn('fetch("/health"', script.text)
         self.assertIn('fetch("/api/ask"', script.text)
+        self.assertIn('fetch("/api/materials/stage-batch"', script.text)
+        self.assertIn('"/api/materials/batch/index"', script.text)
         self.assertIn("textContent", script.text)
         self.assertNotIn("innerHTML", script.text)
         create_service.assert_not_called()
@@ -521,6 +528,77 @@ class APITests(unittest.TestCase):
         sync_index.assert_not_called()
         create_service.assert_not_called()
 
+    def test_batch_stage_returns_success_and_failure_details(self) -> None:
+        manager = Mock(spec=MaterialManager)
+        manager.stage_upload_batch.return_value = BatchStageResult(
+            staged=(
+                StagedMaterial(
+                    upload_id="a" * 32,
+                    filename="notes.md",
+                    operation="add",
+                    size_bytes=12,
+                    sha256="b" * 64,
+                    document_units=1,
+                    chunk_count=2,
+                    embedding_batch_count=1,
+                    staged_at="2026-08-19T10:00:00Z",
+                ),
+            ),
+            failures=(
+                StagedMaterialFailure(
+                    filename="broken.docx",
+                    reason="DOCX 文件已损坏。",
+                ),
+            ),
+        )
+        app.dependency_overrides[get_material_manager] = lambda: manager
+
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/materials/stage-batch",
+                files=[
+                    ("files", ("notes.md", b"notes", "text/markdown")),
+                    ("files", ("broken.docx", b"broken", "application/zip")),
+                ],
+                data={"operation": "add"},
+            )
+
+        self.assertEqual(response.status_code, 207)
+        self.assertEqual(response.json()["status"], "partial")
+        self.assertEqual(response.json()["staged_count"], 1)
+        self.assertEqual(response.json()["failed_count"], 1)
+        self.assertEqual(
+            response.json()["failures"],
+            [{"filename": "broken.docx", "reason": "DOCX 文件已损坏。"}],
+        )
+        uploads = manager.stage_upload_batch.call_args.args[0]
+        self.assertEqual([item.filename for item in uploads], ["notes.md", "broken.docx"])
+
+    def test_batch_stage_all_failures_returns_structured_422(self) -> None:
+        manager = Mock(spec=MaterialManager)
+        manager.stage_upload_batch.return_value = BatchStageResult(
+            staged=(),
+            failures=(
+                StagedMaterialFailure("a.docx", "文件损坏。"),
+                StagedMaterialFailure("b.doc", "旧版 .doc 暂不支持。"),
+            ),
+        )
+        app.dependency_overrides[get_material_manager] = lambda: manager
+
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/materials/stage-batch",
+                files=[
+                    ("files", ("a.docx", b"a", "application/zip")),
+                    ("files", ("b.doc", b"b", "application/msword")),
+                ],
+                data={"operation": "add"},
+            )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["status"], "failed")
+        self.assertEqual(response.json()["failed_count"], 2)
+
     def test_previews_web_material_without_indexing_or_initializing_rag(self) -> None:
         service = Mock(spec=WebMaterialService)
         service.preview = AsyncMock(
@@ -711,6 +789,34 @@ class APITests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "indexed")
         self.assertEqual(response.json()["added"], 2)
+        cached_service.close.assert_called_once_with()
+        self.assertIsNone(app.state.rag_service)
+
+    def test_indexes_staged_batch_once_and_invalidates_cached_rag(self) -> None:
+        manager = Mock(spec=MaterialManager)
+        upload_ids = ["a" * 32, "b" * 32]
+        manager.estimate_index_batches_batch.return_value = 2
+        manager.commit_staged_batch.return_value = BatchMaterialSyncResult(
+            filenames=("chapter.pdf", "notes.docx"),
+            added=4,
+            deleted=0,
+            unchanged=141,
+            cleanup_pending=False,
+        )
+        app.dependency_overrides[get_material_manager] = lambda: manager
+        cached_service = Mock(spec=RAGService)
+        app.state.rag_service = cached_service
+
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/materials/batch/index",
+                json={"upload_ids": upload_ids, "confirm_api_cost": True},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["filenames"], ["chapter.pdf", "notes.docx"])
+        manager.estimate_index_batches_batch.assert_called_once_with(upload_ids)
+        manager.commit_staged_batch.assert_called_once_with(upload_ids)
         cached_service.close.assert_called_once_with()
         self.assertIsNone(app.state.rag_service)
 

@@ -7,8 +7,12 @@ from io import BytesIO
 from pathlib import Path
 
 from docx import Document as WordDocument
+from pypdf import PdfWriter
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from app.index_manifest import LegacyIndexError
+from app.evidence import build_evidence_context
+from app.langchain_store import chunks_to_documents
 
 from app.material_ingestion import (
     IndexSyncSummary,
@@ -17,6 +21,7 @@ from app.material_ingestion import (
     MaterialManager,
     MaterialRollbackError,
     MaterialTooLargeError,
+    MaterialUpload,
     MaterialValidationError,
     validate_material_filename,
 )
@@ -29,6 +34,39 @@ def docx_bytes(text: str | None = "RAG 会先检索资料。") -> bytes:
         document.add_paragraph(text)
     document.save(stream)
     return stream.getvalue()
+
+
+def pdf_bytes(text: str) -> bytes:
+    stream = BytesIO()
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=300, height=300)
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    page[NameObject("/Resources")] = DictionaryObject(
+        {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font})}
+    )
+    content = DecodedStreamObject()
+    content.set_data(f"BT /F1 12 Tf 72 200 Td ({text}) Tj ET".encode("ascii"))
+    page[NameObject("/Contents")] = writer._add_object(content)
+    writer.write(stream)
+    return stream.getvalue()
+
+
+def upload(
+    filename: str,
+    content: bytes,
+    content_type: str,
+) -> MaterialUpload:
+    return MaterialUpload(
+        filename=filename,
+        content_type=content_type,
+        stream=BytesIO(content),
+    )
 
 
 class MaterialIngestionTests(unittest.TestCase):
@@ -114,6 +152,209 @@ class MaterialIngestionTests(unittest.TestCase):
             self.assertEqual(staged.document_units, 1)
             self.assertEqual(staged.chunk_count, 1)
             self.assertEqual(sync_calls, [])
+
+    def test_stages_valid_docx_declared_as_zip_after_ooxml_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.make_manager(Path(directory))
+
+            staged = manager.stage_upload(
+                filename="notes.docx",
+                content_type="application/zip",
+                stream=BytesIO(docx_bytes()),
+            )
+
+        self.assertEqual(staged.filename, "notes.docx")
+        self.assertEqual(staged.document_units, 1)
+
+    def test_batch_stages_multiple_pdfs_as_independent_materials(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = self.make_manager(root)
+
+            result = manager.stage_upload_batch(
+                (
+                    upload("chapter1.pdf", pdf_bytes("chapter one"), "application/pdf"),
+                    upload("chapter2.pdf", pdf_bytes("chapter two"), "application/pdf"),
+                )
+            )
+
+            self.assertEqual([item.filename for item in result.staged], [
+                "chapter1.pdf",
+                "chapter2.pdf",
+            ])
+            self.assertEqual(result.failures, ())
+            self.assertEqual(len(tuple((root / "pending_uploads").iterdir())), 2)
+
+    def test_batch_mixed_formats_use_one_existing_chunk_pipeline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sync_calls = []
+
+            def sync_index(chunks):
+                sync_calls.append(tuple(chunks))
+                return IndexSyncSummary(len(chunks), 0, 0)
+
+            manager = self.make_manager(root, sync_index=sync_index)
+            result = manager.stage_upload_batch(
+                (
+                    upload("chapter.pdf", pdf_bytes("pdf material"), "application/pdf"),
+                    upload("notes.docx", docx_bytes("docx material"), "application/zip"),
+                    upload("summary.md", b"markdown material", "text/markdown"),
+                )
+            )
+
+            committed = manager.commit_staged_batch(
+                [item.upload_id for item in result.staged]
+            )
+
+        self.assertEqual(committed.filenames, (
+            "chapter.pdf",
+            "notes.docx",
+            "summary.md",
+        ))
+        self.assertEqual(len(sync_calls), 1)
+        chunks = sync_calls[0]
+        self.assertEqual(
+            {chunk.source_type for chunk in chunks},
+            {"pdf", "docx", "markdown"},
+        )
+        self.assertEqual(len({chunk.material_id for chunk in chunks}), 3)
+        evidences = build_evidence_context(chunks_to_documents(list(chunks)))
+        self.assertEqual(
+            {evidence.filename for evidence in evidences},
+            {"chapter.pdf", "notes.docx", "summary.md"},
+        )
+        self.assertTrue(
+            any("paragraph=" in evidence.locator for evidence in evidences)
+        )
+
+    def test_batch_partial_failure_keeps_only_complete_staged_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = self.make_manager(root)
+
+            result = manager.stage_upload_batch(
+                (
+                    upload("a.md", b"A material", "text/markdown"),
+                    upload("broken.docx", b"not docx", "application/zip"),
+                    upload("b.txt", b"B material", "text/plain"),
+                )
+            )
+
+            self.assertEqual(
+                [item.filename for item in result.staged],
+                ["a.md", "b.txt"],
+            )
+            self.assertEqual(len(result.failures), 1)
+            self.assertEqual(result.failures[0].filename, "broken.docx")
+            pending_names = {
+                path.name
+                for directory_path in (root / "pending_uploads").iterdir()
+                for path in directory_path.iterdir()
+                if path.name != "upload.json"
+            }
+            self.assertEqual(pending_names, {"a.md", "b.txt"})
+
+    def test_batch_all_failures_return_reasons_without_pending_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = self.make_manager(root)
+
+            result = manager.stage_upload_batch(
+                (
+                    upload("broken.docx", b"not docx", "application/zip"),
+                    upload("legacy.doc", b"old word", "application/msword"),
+                )
+            )
+
+            self.assertEqual(result.staged, ())
+            self.assertEqual(len(result.failures), 2)
+            pending = root / "pending_uploads"
+            self.assertFalse(pending.exists() and any(pending.iterdir()))
+
+    def test_batch_over_combined_cost_limit_discards_all_staged_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = self.make_manager(root, max_embedding_batches=1)
+
+            result = manager.stage_upload_batch(
+                (
+                    upload("a.md", b"first", "text/markdown"),
+                    upload("b.md", b"second", "text/markdown"),
+                )
+            )
+
+            self.assertEqual(result.staged, ())
+            self.assertEqual(len(result.failures), 2)
+            self.assertTrue(
+                all("费用保护上限" in item.reason for item in result.failures)
+            )
+            pending = root / "pending_uploads"
+            self.assertFalse(pending.exists() and any(pending.iterdir()))
+
+    def test_batch_rejects_duplicate_filename_without_merging_materials(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.make_manager(Path(directory))
+
+            result = manager.stage_upload_batch(
+                (
+                    upload("notes.md", b"first", "text/markdown"),
+                    upload("NOTES.md", b"second", "text/markdown"),
+                )
+            )
+
+        self.assertEqual([item.filename for item in result.staged], ["notes.md"])
+        self.assertEqual(len(result.failures), 1)
+        self.assertIn("重复文件名", result.failures[0].reason)
+
+    def test_batch_sync_failure_restores_every_file_and_previous_document(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            documents = root / "documents"
+            documents.mkdir()
+            (documents / "replace.md").write_text("old", encoding="utf-8")
+            sync_calls = 0
+
+            def fail_once(chunks):
+                nonlocal sync_calls
+                sync_calls += 1
+                if sync_calls == 1:
+                    raise RuntimeError("sync failed")
+                return IndexSyncSummary(0, 0, len(chunks))
+
+            manager = self.make_manager(root, sync_index=fail_once)
+            added = manager.stage_upload(
+                filename="new.md",
+                content_type="text/markdown",
+                stream=BytesIO(b"new material"),
+            )
+            replaced = manager.stage_upload(
+                filename="replace.md",
+                content_type="text/markdown",
+                stream=BytesIO(b"replacement"),
+                operation="replace",
+            )
+
+            with self.assertRaisesRegex(MaterialIndexError, "已恢复"):
+                manager.commit_staged_batch([added.upload_id, replaced.upload_id])
+
+            self.assertFalse((documents / "new.md").exists())
+            self.assertEqual(
+                (documents / "replace.md").read_text(encoding="utf-8"),
+                "old",
+            )
+            self.assertTrue(
+                (root / "pending_uploads" / added.upload_id / "new.md").is_file()
+            )
+            self.assertTrue(
+                (
+                    root
+                    / "pending_uploads"
+                    / replaced.upload_id
+                    / "replace.md"
+                ).is_file()
+            )
+            self.assertEqual(sync_calls, 2)
 
     def test_rejects_spoofed_docx_and_cleans_pending_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

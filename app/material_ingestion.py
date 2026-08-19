@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from io import BufferedIOBase
@@ -39,6 +39,7 @@ if __package__:
     from app.security_limits import (
         INDEX_MAX_BATCHES_PER_OPERATION,
         MAX_UPLOAD_EXTRACTED_CHARACTERS,
+        MAX_UPLOAD_FILES_PER_BATCH,
         MAX_UPLOAD_PDF_PAGES,
         PENDING_UPLOAD_TTL_SECONDS,
     )
@@ -68,6 +69,7 @@ else:
     from security_limits import (
         INDEX_MAX_BATCHES_PER_OPERATION,
         MAX_UPLOAD_EXTRACTED_CHARACTERS,
+        MAX_UPLOAD_FILES_PER_BATCH,
         MAX_UPLOAD_PDF_PAGES,
         PENDING_UPLOAD_TTL_SECONDS,
     )
@@ -97,6 +99,8 @@ ALLOWED_CONTENT_TYPES = {
     ".docx": {
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "application/octet-stream",
+        "application/zip",
+        "application/x-zip-compressed",
     },
 }
 
@@ -145,6 +149,25 @@ class StagedMaterial:
 
 
 @dataclass(frozen=True)
+class MaterialUpload:
+    filename: str | None
+    content_type: str | None
+    stream: BinaryIO | BufferedIOBase
+
+
+@dataclass(frozen=True)
+class StagedMaterialFailure:
+    filename: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class BatchStageResult:
+    staged: tuple[StagedMaterial, ...]
+    failures: tuple[StagedMaterialFailure, ...]
+
+
+@dataclass(frozen=True)
 class IndexSyncSummary:
     added: int
     deleted: int
@@ -155,6 +178,15 @@ class IndexSyncSummary:
 class MaterialSyncResult:
     filename: str
     operation: UploadOperation
+    added: int
+    deleted: int
+    unchanged: int
+    cleanup_pending: bool
+
+
+@dataclass(frozen=True)
+class BatchMaterialSyncResult:
+    filenames: tuple[str, ...]
     added: int
     deleted: int
     unchanged: int
@@ -301,6 +333,7 @@ class MaterialManager:
         max_pdf_pages: int = MAX_UPLOAD_PDF_PAGES,
         max_extracted_characters: int = MAX_UPLOAD_EXTRACTED_CHARACTERS,
         max_embedding_batches: int = INDEX_MAX_BATCHES_PER_OPERATION,
+        max_batch_files: int = MAX_UPLOAD_FILES_PER_BATCH,
         pending_upload_ttl_seconds: int = PENDING_UPLOAD_TTL_SECONDS,
         sync_index: Callable[[list[DocumentChunk]], IndexSyncSummary] | None = None,
         delete_index: Callable[[str], int] | None = None,
@@ -311,6 +344,7 @@ class MaterialManager:
             "max_pdf_pages": max_pdf_pages,
             "max_extracted_characters": max_extracted_characters,
             "max_embedding_batches": max_embedding_batches,
+            "max_batch_files": max_batch_files,
             "pending_upload_ttl_seconds": pending_upload_ttl_seconds,
         }
         if any(
@@ -325,6 +359,7 @@ class MaterialManager:
         self.max_pdf_pages = max_pdf_pages
         self.max_extracted_characters = max_extracted_characters
         self.max_embedding_batches = max_embedding_batches
+        self.max_batch_files = max_batch_files
         self.pending_upload_ttl_seconds = pending_upload_ttl_seconds
         self._sync_index = sync_index or _production_sync_index
         self._delete_index = delete_index or delete_material_documents
@@ -475,6 +510,72 @@ class MaterialManager:
             shutil.rmtree(upload_directory, ignore_errors=True)
             raise
 
+    def stage_upload_batch(
+        self,
+        uploads: Sequence[MaterialUpload],
+        *,
+        operation: str = "add",
+    ) -> BatchStageResult:
+        """逐文件复用单文件暂存；失败项不影响其他完整暂存结果。"""
+        items = tuple(uploads)
+        if not items:
+            raise MaterialValidationError("批量上传至少需要一个文件。")
+        if len(items) > self.max_batch_files:
+            raise MaterialValidationError(
+                f"单次最多上传 {self.max_batch_files} 个资料文件。"
+            )
+        safe_operation = self._validate_operation(operation)
+        staged_items: list[StagedMaterial] = []
+        failures: list[StagedMaterialFailure] = []
+        seen_filenames: set[str] = set()
+        for upload in items:
+            display_name = upload.filename or "未命名文件"
+            try:
+                safe_filename = validate_material_filename(upload.filename)
+                filename_key = safe_filename.casefold()
+                if filename_key in seen_filenames:
+                    raise MaterialValidationError("批量上传中包含重复文件名。")
+                seen_filenames.add(filename_key)
+                staged_items.append(
+                    self.stage_upload(
+                        filename=safe_filename,
+                        content_type=upload.content_type,
+                        stream=upload.stream,
+                        operation=safe_operation,
+                    )
+                )
+            except MaterialIngestionError as error:
+                failures.append(
+                    StagedMaterialFailure(
+                        filename=display_name,
+                        reason=str(error),
+                    )
+                )
+            except Exception:
+                failures.append(
+                    StagedMaterialFailure(
+                        filename=display_name,
+                        reason="资料解析失败。",
+                    )
+                )
+
+        total_batches = sum(item.embedding_batch_count for item in staged_items)
+        if total_batches > self.max_embedding_batches:
+            reason = "批量资料预计 Embedding 批次数超过单次费用保护上限。"
+            for item in staged_items:
+                failures.append(
+                    StagedMaterialFailure(filename=item.filename, reason=reason)
+                )
+                shutil.rmtree(
+                    self.pending_uploads_dir / item.upload_id,
+                    ignore_errors=True,
+                )
+            staged_items.clear()
+        return BatchStageResult(
+            staged=tuple(staged_items),
+            failures=tuple(failures),
+        )
+
     def _load_staged(self, upload_id: str) -> tuple[StagedMaterial, Path]:
         if UPLOAD_ID_PATTERN.fullmatch(upload_id) is None:
             raise MaterialNotFoundError("暂存上传不存在。")
@@ -510,6 +611,59 @@ class MaterialManager:
         staged, _ = self._load_staged(upload_id)
         return staged
 
+    def _load_staged_batch(
+        self,
+        upload_ids: Sequence[str],
+    ) -> tuple[tuple[StagedMaterial, Path], ...]:
+        ids = tuple(upload_ids)
+        if not ids:
+            raise MaterialValidationError("批量索引至少需要一个暂存上传。")
+        if len(ids) > self.max_batch_files:
+            raise MaterialValidationError(
+                f"单次最多索引 {self.max_batch_files} 个资料文件。"
+            )
+        if len(set(ids)) != len(ids):
+            raise MaterialValidationError("批量索引包含重复的暂存上传。")
+        loaded = tuple(self._load_staged(upload_id) for upload_id in ids)
+        filenames = [staged.filename.casefold() for staged, _ in loaded]
+        if len(set(filenames)) != len(filenames):
+            raise MaterialValidationError("批量索引包含重复文件名。")
+        for staged, _ in loaded:
+            self._check_operation_state(staged.filename, staged.operation)
+        return loaded
+
+    def _chunks_with_staged_batch(
+        self,
+        loaded: Sequence[tuple[StagedMaterial, Path]],
+    ) -> list[DocumentChunk]:
+        current_chunks = build_chunks(load_material_units(self.documents_dir))
+        replacement_names = {
+            staged.filename
+            for staged, _ in loaded
+            if staged.operation == "replace"
+        }
+        if replacement_names:
+            current_chunks = [
+                chunk
+                for chunk in current_chunks
+                if not any(
+                    source_belongs_to_material(chunk.source, filename)
+                    for filename in replacement_names
+                )
+            ]
+        staged_chunks: list[DocumentChunk] = []
+        for _, staged_path in loaded:
+            staged_chunks.extend(
+                build_chunks(
+                    load_material_units(
+                        staged_path.parent,
+                        max_pdf_pages=self.max_pdf_pages,
+                        max_total_characters=self.max_extracted_characters,
+                    )
+                )
+            )
+        return [*current_chunks, *staged_chunks]
+
     def estimate_index_batches(self, upload_id: str) -> int:
         """在正式提交前按 Chroma 现状计算实际待新增的批次数。"""
         staged, staged_path = self._load_staged(upload_id)
@@ -530,6 +684,20 @@ class MaterialManager:
         )
         estimated_batches = self._estimate_index_batches(
             [*current_chunks, *staged_chunks]
+        )
+        if (
+            isinstance(estimated_batches, bool)
+            or not isinstance(estimated_batches, int)
+            or estimated_batches < 0
+        ):
+            raise MaterialIndexError("无法计算安全的索引费用预算。")
+        return estimated_batches
+
+    def estimate_index_batches_batch(self, upload_ids: Sequence[str]) -> int:
+        """按一份候选资料集合计算批量提交的真实新增批次数。"""
+        loaded = self._load_staged_batch(upload_ids)
+        estimated_batches = self._estimate_index_batches(
+            self._chunks_with_staged_batch(loaded)
         )
         if (
             isinstance(estimated_batches, bool)
@@ -583,6 +751,67 @@ class MaterialManager:
         return MaterialSyncResult(
             filename=staged.filename,
             operation=staged.operation,
+            added=sync_result.added,
+            deleted=sync_result.deleted,
+            unchanged=sync_result.unchanged,
+            cleanup_pending=cleanup_pending,
+        )
+
+    def commit_staged_batch(
+        self,
+        upload_ids: Sequence[str],
+    ) -> BatchMaterialSyncResult:
+        """原子移动一批完整暂存文件，并只调用一次现有增量同步。"""
+        loaded = self._load_staged_batch(upload_ids)
+        self.documents_dir.mkdir(parents=True, exist_ok=True)
+        old_chunks = build_chunks(load_material_units(self.documents_dir))
+        backup_directory = self.pending_deletions_dir / uuid4().hex
+        moved_uploads: list[tuple[Path, Path]] = []
+        moved_existing: list[tuple[Path, Path]] = []
+        sync_attempted = False
+        try:
+            for staged, staged_path in loaded:
+                final_path = self.documents_dir / staged.filename
+                if staged.operation == "replace":
+                    backup_directory.mkdir(parents=True, exist_ok=True)
+                    backup_path = backup_directory / staged.filename
+                    final_path.replace(backup_path)
+                    moved_existing.append((backup_path, final_path))
+                staged_path.replace(final_path)
+                moved_uploads.append((final_path, staged_path))
+            new_chunks = build_chunks(load_material_units(self.documents_dir))
+            sync_attempted = True
+            sync_result = self._sync_index(new_chunks)
+        except Exception as error:
+            try:
+                for final_path, staged_path in reversed(moved_uploads):
+                    if final_path.exists():
+                        final_path.replace(staged_path)
+                for backup_path, final_path in reversed(moved_existing):
+                    if backup_path.exists():
+                        backup_path.replace(final_path)
+                if sync_attempted and not isinstance(error, IndexManifestError):
+                    self._sync_index(old_chunks)
+            except Exception as rollback_error:
+                raise MaterialRollbackError(
+                    "批量索引失败，且资料与索引的自动回滚未能完成。"
+                ) from rollback_error
+            raise MaterialIndexError(
+                "批量资料索引失败，已恢复上传前状态。"
+            ) from error
+
+        cleanup_pending = False
+        cleanup_directories = [backup_directory]
+        cleanup_directories.extend(staged_path.parent for _, staged_path in loaded)
+        for directory in cleanup_directories:
+            if not directory.exists():
+                continue
+            try:
+                shutil.rmtree(directory)
+            except OSError:
+                cleanup_pending = True
+        return BatchMaterialSyncResult(
+            filenames=tuple(staged.filename for staged, _ in loaded),
             added=sync_result.added,
             deleted=sync_result.deleted,
             unchanged=sync_result.unchanged,

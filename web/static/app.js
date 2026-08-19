@@ -15,11 +15,15 @@ const emptySources = document.querySelector("#empty-sources");
 const requestMeta = document.querySelector("#request-meta");
 const uploadForm = document.querySelector("#upload-form");
 const materialFileInput = document.querySelector("#material-file");
+const selectedFiles = document.querySelector("#selected-files");
+const selectedFileCount = document.querySelector("#selected-file-count");
+const selectedFileList = document.querySelector("#selected-file-list");
 const uploadOperation = document.querySelector("#upload-operation");
 const stageButton = document.querySelector("#stage-button");
 const stageSummary = document.querySelector("#stage-summary");
 const stageFilename = document.querySelector("#stage-filename");
 const stageDetails = document.querySelector("#stage-details");
+const stageFileResults = document.querySelector("#stage-file-results");
 const stageCost = document.querySelector("#stage-cost");
 const confirmIndexButton = document.querySelector("#confirm-index-button");
 const materialMessage = document.querySelector("#material-message");
@@ -159,6 +163,8 @@ function setMaterialBusy(busy) {
 function clearStagedMaterial({ clearWebPreview = true } = {}) {
   stagedUpload = null;
   stageSummary.hidden = true;
+  stageFileResults.replaceChildren();
+  confirmIndexButton.hidden = false;
   if (clearWebPreview) {
     webPreview.hidden = true;
     webPreviewTitle.textContent = "";
@@ -167,6 +173,46 @@ function clearStagedMaterial({ clearWebPreview = true } = {}) {
     webPreviewMeta.textContent = "";
     webPreviewMarkdown.textContent = "";
   }
+}
+
+function renderSelectedFiles() {
+  const files = Array.from(materialFileInput.files || []);
+  selectedFileList.replaceChildren();
+  selectedFileCount.textContent = files.length ? `已选择 ${files.length} 个文件` : "";
+  for (const file of files) {
+    const item = document.createElement("li");
+    item.textContent = `${file.name} · ${formatFileSize(file.size)}`;
+    selectedFileList.append(item);
+  }
+  selectedFiles.hidden = files.length === 0;
+}
+
+function renderBatchStageResult(payload) {
+  const staged = Array.isArray(payload.staged) ? payload.staged : [];
+  const failures = Array.isArray(payload.failures) ? payload.failures : [];
+  stageFileResults.replaceChildren();
+  for (const item of staged) {
+    const result = document.createElement("li");
+    result.textContent = `成功：${String(item.filename)} · ${Number(item.chunk_count) || 0} 个文本块`;
+    stageFileResults.append(result);
+  }
+  for (const item of failures) {
+    const result = document.createElement("li");
+    result.textContent = `失败：${String(item.filename)} · ${String(item.reason)}`;
+    stageFileResults.append(result);
+  }
+  stageFilename.textContent = staged.length
+    ? `成功暂存 ${staged.length} 个文件`
+    : "本批资料全部失败";
+  stageDetails.textContent = `成功 ${staged.length} 个，失败 ${failures.length} 个；失败文件未进入索引。`;
+  const totalChunks = Number(payload.total_chunks) || 0;
+  const totalBatches = Number(payload.embedding_batch_count) || 0;
+  stageCost.textContent = staged.length
+    ? `成功文件共 ${totalChunks} 个文本块，按当前配置约 ${totalBatches} 个 Embedding 批次（单次上限 20）。`
+    : "没有可确认写入索引的文件。";
+  confirmIndexButton.hidden = staged.length === 0;
+  stageSummary.hidden = false;
+  return staged;
 }
 
 function safeExternalHttpUrl(value) {
@@ -212,9 +258,14 @@ async function loadMaterials() {
 }
 
 async function stageMaterial() {
-  const file = materialFileInput.files?.[0];
-  if (!file) {
-    showMaterialMessage("error", "请先选择一个资料文件。");
+  const files = Array.from(materialFileInput.files || []);
+  if (!files.length) {
+    showMaterialMessage("error", "请先选择至少一个资料文件。");
+    materialFileInput.focus();
+    return;
+  }
+  if (files.length > 20) {
+    showMaterialMessage("error", "单次最多选择 20 个资料文件。");
     materialFileInput.focus();
     return;
   }
@@ -226,30 +277,47 @@ async function stageMaterial() {
   materialMessage.hidden = true;
   clearStagedMaterial();
   const body = new FormData();
-  body.append("file", file);
+  for (const file of files) {
+    body.append("files", file);
+  }
   body.append("operation", uploadOperation.value);
+  stageButton.textContent = "正在处理资料…";
   try {
-    const response = await fetch("/api/materials/stage", {
+    const response = await fetch("/api/materials/stage-batch", {
       method: "POST",
       headers: { Accept: "application/json" },
       body,
     });
     const requestId = response.headers.get("X-Request-ID") || "";
     const payload = await response.json().catch(() => ({}));
+    if (Array.isArray(payload.staged) && Array.isArray(payload.failures)) {
+      const staged = renderBatchStageResult(payload);
+      stagedUpload = staged.length ? { type: "batch", staged } : null;
+      if (payload.status === "partial") {
+        showMaterialMessage(
+          "error",
+          "部分文件解析成功，请查看逐文件结果；成功文件尚未调用 Embedding。",
+          requestId,
+        );
+      } else if (payload.status === "failed") {
+        showMaterialMessage("error", "本批文件全部解析失败，请查看原因。", requestId);
+      } else {
+        showMaterialMessage(
+          "success",
+          "全部文件本地校验与解析完成，尚未调用 Embedding。",
+          requestId,
+        );
+      }
+      return;
+    }
     if (!response.ok) {
       showMaterialMessage("error", materialMessageForStatus(response.status), requestId);
       return;
     }
-    stagedUpload = payload;
-    const operationLabel = payload.operation === "replace" ? "替换同名资料" : "新增资料";
-    stageFilename.textContent = `${payload.filename} · ${operationLabel} · ${formatFileSize(payload.size_bytes)}`;
-    stageDetails.textContent = `解析为 ${payload.document_units} 个资料单元、${payload.chunk_count} 个文本块。`;
-    stageCost.textContent = `本次共 1 个文件、${payload.chunk_count} 个文本块，按当前配置约 ${payload.embedding_batch_count} 个 Embedding 批次（单次上限 20）；若现有索引与正式资料目录不一致，完整增量同步可能处理其他变化块，网络重试也可能增加请求。`;
-    stageSummary.hidden = false;
-    showMaterialMessage("success", "本地校验与解析完成，尚未调用 Embedding。", requestId);
   } catch {
     showMaterialMessage("error", "无法连接资料上传 API。");
   } finally {
+    stageButton.textContent = "本地校验与解析";
     setMaterialBusy(false);
   }
 }
@@ -288,6 +356,8 @@ async function previewWebMaterial() {
     const operationLabel = payload.operation === "replace" ? "替换网页资料" : "新增网页资料";
     stageFilename.textContent = `${payload.filename} · ${operationLabel} · ${formatFileSize(payload.size_bytes)}`;
     stageDetails.textContent = `解析为 ${payload.document_units} 个资料单元、${payload.chunk_count} 个文本块。`;
+    stageFileResults.replaceChildren();
+    confirmIndexButton.hidden = false;
     stageCost.textContent = `网页预览不会产生模型费用；确认后约 ${payload.embedding_batch_count} 个 Embedding 批次（单次上限 20）。`;
     stageSummary.hidden = false;
 
@@ -318,22 +388,32 @@ async function previewWebMaterial() {
 }
 
 async function confirmIndex() {
-  if (!stagedUpload?.upload_id || materialRequestInProgress) {
+  const batchItems = Array.isArray(stagedUpload?.staged)
+    ? stagedUpload.staged
+    : [];
+  if ((!stagedUpload?.upload_id && !batchItems.length) || materialRequestInProgress) {
     return;
   }
   setMaterialBusy(true);
   try {
-    const response = await fetch(
-      `/api/materials/${encodeURIComponent(stagedUpload.upload_id)}/index`,
-      {
-        method: "POST",
-        headers: {
-          Accept: "application/json",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ confirm_api_cost: true }),
+    const isBatch = batchItems.length > 0;
+    const target = isBatch
+      ? "/api/materials/batch/index"
+      : `/api/materials/${encodeURIComponent(stagedUpload.upload_id)}/index`;
+    const requestBody = isBatch
+      ? {
+          upload_ids: batchItems.map((item) => String(item.upload_id)),
+          confirm_api_cost: true,
+        }
+      : { confirm_api_cost: true };
+    const response = await fetch(target, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
       },
-    );
+      body: JSON.stringify(requestBody),
+    });
     const requestId = response.headers.get("X-Request-ID") || "";
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -342,13 +422,14 @@ async function confirmIndex() {
     }
     showMaterialMessage(
       "success",
-      `索引完成：新增或更新 ${payload.added}，删除旧记录 ${payload.deleted}，未变化 ${payload.unchanged}。`,
+      `${batchItems.length ? `${batchItems.length} 个文件` : "资料"}索引完成：新增或更新 ${payload.added}，删除旧记录 ${payload.deleted}，未变化 ${payload.unchanged}。`,
       requestId,
     );
     stagedUpload = null;
     stageSummary.hidden = true;
     webPreview.hidden = true;
     uploadForm.reset();
+    renderSelectedFiles();
     webPreviewForm.reset();
     await loadMaterials();
   } catch {
@@ -501,6 +582,7 @@ uploadForm.addEventListener("submit", (event) => {
 });
 materialFileInput.addEventListener("change", () => {
   clearStagedMaterial();
+  renderSelectedFiles();
 });
 uploadOperation.addEventListener("change", () => {
   clearStagedMaterial();

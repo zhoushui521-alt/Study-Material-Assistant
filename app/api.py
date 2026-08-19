@@ -37,6 +37,8 @@ from app.agent_service import (
 )
 from app.langchain_rag import LangChainRAGError, source_label
 from app.material_ingestion import (
+    BatchMaterialSyncResult,
+    BatchStageResult,
     MaterialConflictError,
     MaterialDeleteResult,
     MaterialFile,
@@ -46,6 +48,7 @@ from app.material_ingestion import (
     MaterialRollbackError,
     MaterialSyncResult,
     MaterialTooLargeError,
+    MaterialUpload,
     MaterialValidationError,
     StagedMaterial,
 )
@@ -59,6 +62,7 @@ from app.rag_service import (
     create_rag_service,
 )
 from app.request_history import RequestHistoryError, RequestHistoryWriter
+from app.security_limits import MAX_UPLOAD_FILES_PER_BATCH
 from app.study_workflow import (
     WORKFLOW_MAX_GOAL_LENGTH,
     WORKFLOW_MAX_PROGRESS_NOTE_LENGTH,
@@ -246,15 +250,57 @@ class StagedMaterialResponse(BaseModel):
     embedding_batch_count: int
 
 
+class StagedMaterialFailureResponse(BaseModel):
+    filename: str
+    reason: str
+
+
+class BatchStagedMaterialResponse(BaseModel):
+    status: Literal["staged", "partial", "failed"]
+    staged: list[StagedMaterialResponse]
+    failures: list[StagedMaterialFailureResponse]
+    total_files: int
+    staged_count: int
+    failed_count: int
+    total_chunks: int
+    embedding_batch_count: int
+
+
 class MaterialIndexRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     confirm_api_cost: Literal[True]
 
 
+class MaterialBatchIndexRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    upload_ids: list[str] = Field(
+        min_length=1,
+        max_length=MAX_UPLOAD_FILES_PER_BATCH,
+    )
+    confirm_api_cost: Literal[True]
+
+    @field_validator("upload_ids")
+    @classmethod
+    def reject_duplicate_upload_ids(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("upload_ids 不能重复。")
+        return value
+
+
 class MaterialIndexResponse(BaseModel):
     filename: str
     operation: Literal["add", "replace"]
+    status: Literal["indexed"] = "indexed"
+    added: int
+    deleted: int
+    unchanged: int
+    cleanup_pending: bool
+
+
+class MaterialBatchIndexResponse(BaseModel):
+    filenames: list[str]
     status: Literal["indexed"] = "indexed"
     added: int
     deleted: int
@@ -782,6 +828,86 @@ def stage_material_upload(
 
 
 @app.post(
+    "/api/materials/stage-batch",
+    response_model=BatchStagedMaterialResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def stage_material_batch(
+    files: Annotated[
+        list[UploadFile],
+        File(description="一次上传多个 TXT、Markdown、DOCX 或 PDF 学习资料"),
+    ],
+    response: Response,
+    manager: Annotated[MaterialManager, Depends(get_material_manager)],
+    guard: Annotated[OperationGuard, Depends(get_operation_guard)],
+    operation: Annotated[Literal["add", "replace"], Form()] = "add",
+) -> BatchStagedMaterialResponse:
+    """逐文件零费用暂存与解析；返回每个成功和失败结果。"""
+    try:
+        with guard.acquire("stage"):
+            result: BatchStageResult = manager.stage_upload_batch(
+                tuple(
+                    MaterialUpload(
+                        filename=file.filename,
+                        content_type=file.content_type,
+                        stream=file.file,
+                    )
+                    for file in files
+                ),
+                operation=operation,
+            )
+    except OperationProtectionError as error:
+        raise_operation_http_error(error)
+        raise
+    except Exception as error:
+        raise_material_http_error(error)
+        raise
+    finally:
+        for file in files:
+            file.file.close()
+
+    if not result.staged:
+        batch_status = "failed"
+        response.status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+    elif result.failures:
+        batch_status = "partial"
+        response.status_code = status.HTTP_207_MULTI_STATUS
+    else:
+        batch_status = "staged"
+    staged_responses = [
+        StagedMaterialResponse(
+            upload_id=item.upload_id,
+            filename=item.filename,
+            operation=item.operation,
+            size_bytes=item.size_bytes,
+            document_units=item.document_units,
+            chunk_count=item.chunk_count,
+            embedding_batch_count=item.embedding_batch_count,
+        )
+        for item in result.staged
+    ]
+    failure_responses = [
+        StagedMaterialFailureResponse(
+            filename=item.filename,
+            reason=item.reason,
+        )
+        for item in result.failures
+    ]
+    return BatchStagedMaterialResponse(
+        status=batch_status,
+        staged=staged_responses,
+        failures=failure_responses,
+        total_files=len(files),
+        staged_count=len(staged_responses),
+        failed_count=len(failure_responses),
+        total_chunks=sum(item.chunk_count for item in result.staged),
+        embedding_batch_count=sum(
+            item.embedding_batch_count for item in result.staged
+        ),
+    )
+
+
+@app.post(
     "/api/web-materials/preview",
     response_model=WebMaterialPreviewResponse,
     status_code=status.HTTP_202_ACCEPTED,
@@ -835,6 +961,43 @@ async def preview_web_material(
         document_units=preview.document_units,
         chunk_count=preview.chunk_count,
         embedding_batch_count=preview.embedding_batch_count,
+    )
+
+
+@app.post(
+    "/api/materials/batch/index",
+    response_model=MaterialBatchIndexResponse,
+)
+def index_staged_material_batch(
+    payload: MaterialBatchIndexRequest,
+    request: Request,
+    manager: Annotated[MaterialManager, Depends(get_material_manager)],
+    guard: Annotated[OperationGuard, Depends(get_operation_guard)],
+) -> MaterialBatchIndexResponse:
+    """一次确认后原子提交多个文件，并复用一次现有 Chroma 增量同步。"""
+    try:
+        with guard.acquire("index") as lease:
+            lease.reserve_units(
+                manager.estimate_index_batches_batch(payload.upload_ids)
+            )
+            result: BatchMaterialSyncResult = manager.commit_staged_batch(
+                payload.upload_ids
+            )
+            invalidate_rag_service(request.app)
+    except OperationProtectionError as error:
+        raise_operation_http_error(error)
+        raise
+    except Exception as error:
+        if isinstance(error, MaterialRollbackError):
+            invalidate_rag_service(request.app)
+        raise_material_http_error(error)
+        raise
+    return MaterialBatchIndexResponse(
+        filenames=list(result.filenames),
+        added=result.added,
+        deleted=result.deleted,
+        unchanged=result.unchanged,
+        cleanup_pending=result.cleanup_pending,
     )
 
 
