@@ -254,6 +254,27 @@ Hybrid 把 `wishart_definition` 的最佳 Gold 从第 6 名提升到第 3 名，
 正式问答继续使用 Stage 2 Baseline；Stage 3.2 是否引入 Reranker，应先扩大评测集并
 定位 RRF 的排序退化，而不是直接继续叠加组件。
 
+## Stage 3.2：Cross-Encoder Reranker 受控实验
+
+Stage 3.2 在不修改 Dense、BM25、RRF、Chunk、Evaluation Dataset 和 Context
+Construction 的前提下，只对 Stage 3.1 的 RRF Candidate Pool 执行本地 Cross-Encoder
+重排。正式 `RAGService` 仍使用 Stage 2 Baseline，实验不会自动进入问答主链路。
+
+费用与模型下载都需要显式确认：
+
+```powershell
+python -m app.evaluate_reranker `
+  --confirm-query-embedding-cost `
+  --confirm-model-download-and-local-inference
+```
+
+2026-08-20 使用固定 revision 的 `BAAI/bge-reranker-base`、CPU、最多 20 个候选，完成
+10 个案例、10 次成功运行 Query Embedding、130 对本地 Pair Scoring、0 次 ChatModel
+的 `local_real_cross_encoder` A/B/C。C 相对 B 的 Recall@1/3 分别提高 `0.5000 / 0.1111`，
+MRR 提高 `0.3481`，nDCG@5 提高 `0.2454`；但 Context Precision 降低 `0.0119`，平均
+Retrieval 延迟增加约 `2862.4 ms`。因此当前只保留隔离实验能力，不接入正式 Pipeline。
+完整证据和边界见 `docs/stage3-2-completion-report.md`。
+
 ## 最小 FastAPI 服务
 
 启动本地服务：

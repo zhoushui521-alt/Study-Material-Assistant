@@ -11,4 +11,5 @@ data/pending_deletions/
 data/request_logs/
 data/crawl4ai_runtime/
 data/study_workflows/
+data/models/
 evaluation/results/

@@ -1,0 +1,5 @@
+# Stage 3.2 可选本地 Cross-Encoder 实验依赖；不属于生产 Retrieval 必需项。
+FlagEmbedding==1.4.0
+# FlagEmbedding 1.4.0 仍调用 Transformers v4 tokenizer API；v5 会在真实打分时报错。
+transformers==4.57.6
+sentence-transformers==5.1.2
