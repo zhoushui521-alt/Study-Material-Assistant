@@ -275,6 +275,35 @@ MRR 提高 `0.3481`，nDCG@5 提高 `0.2454`；但 Context Precision 降低 `0.0
 Retrieval 延迟增加约 `2862.4 ms`。因此当前只保留隔离实验能力，不接入正式 Pipeline。
 完整证据和边界见 `docs/stage3-2-completion-report.md`。
 
+## Stage 3.3：Structure-aware Chunking 受控实验
+
+Stage 3.3 只改变 Chunking Strategy。A 使用正式 Pipeline 当前的固定 180 字符策略；
+B 按标题、段落、连续列表和代码块组织内容，超限时按句子、词和字符回退，最大 600
+字符、0 overlap。Embedding、Dense Top 10、0.25 阈值、80/20 排序、Top 3 Seed、同源
+±2 Adjacent Expansion 和 Context Limit 8 全部冻结。正式 `build_chunks()`、资料摄取与
+RAG Pipeline 保持不变。
+
+默认运行只解析资料、重建 Gold Mapping 并显示费用边界，不创建 Embedding Client：
+
+```powershell
+python -m app.evaluate_chunking
+```
+
+真实 A/B 会使用同一 Embedding 配置在临时目录分别重建索引，并需要同时确认索引与查询
+费用；生产索引只做只读核验与前后指纹检查：
+
+```powershell
+python -m app.evaluate_chunking `
+  --confirm-controlled-index-embedding-cost `
+  --confirm-query-embedding-cost
+```
+
+当前 10 案例真实实验中，Chunk 数 `147 → 55`，Recall@1、MRR、nDCG@5 分别提升
+`0.2222 / 0.0315 / 0.0598`；但 Recall@3、Context Precision、Final Context Recall
+分别下降 `0.1667 / 0.0298 / 0.2222`，并新增 Recall / Ranking Failure。因此只保留
+隔离实验能力，不把 `structure-aware-block-600-overlap-0-v1` 接入生产 Pipeline。
+完整证据和边界见 `docs/stage3-3-completion-report.md`。
+
 ## 最小 FastAPI 服务
 
 启动本地服务：
