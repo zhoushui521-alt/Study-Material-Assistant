@@ -98,10 +98,11 @@ Schema 版本。已有记录但没有 Manifest 的旧索引只允许问答读取
 失败，不会自动清空或迁移。
 该命令会调用真实 Embedding API，可能产生费用；运行前应先确认解析结果。
 
-索引成功后，运行 `app/search_langchain.py`。它先使用 Chroma 进行语义召回，
-再结合关键词覆盖率对候选结果重新排序。后续提问只需要向量化问题，不再重复
-向量化全部资料。当前混合分使用 80% 向量相关度和 20% 关键词覆盖率；这是
-当前 10 个固定案例验证过的参数基线，仍需要在扩充案例或资料变化后重新校准。
+索引成功后，运行 `app/search_langchain.py`。当前正式问答仍采用 Stage 2 Baseline：
+Chroma Dense Vector 先从完整语料召回 Top 10，再按 80% 向量相关度 + 20% 关键词
+覆盖率重排并选择 Top 3 Seed。后续提问只需要向量化问题，不会重新向量化全部资料。
+Stage 3.1 已实现 BM25 + Dense + RRF 双路实验能力，但受控 A/B 没有证明它在当前
+Top 3 Seed 主链路上稳定优于 Baseline，因此没有替换正式问答 Retriever。
 
 完整 LangChain RAG 入口为 `app/ask_langchain.py`：
 
@@ -122,7 +123,7 @@ python -m app.ask_langchain "资料太长应该怎么办？"
 `RunnableParallel`、`RunnableBranch` 和 `StrOutputParser` 组合以下固定流程：
 
 ```text
-问题 → 混合检索 → 有无证据分支 → Prompt → ChatModel → 文本解析 → 归一化与来源
+问题 → 当前检索基线 → 有无证据分支 → Prompt → ChatModel → 文本解析 → 归一化与来源
 ```
 
 CLI 与 FastAPI 问答都通过 `RAGService` 执行；每个服务实例在初始化时只构造一次
@@ -202,10 +203,56 @@ python -m app.evaluate_retrieval --confirm-query-embedding-cost
 
 Stage 2 可以确定性验证 Citation ID 是否存在于本次 Evidence Map；Citation Coverage
 仍需要 Claim 标注，Citation Support 仍需要人工或经授权的 Judge。有效 Citation ID
-不等于 Evidence 真正支持对应 Claim。当前仅完成 Fixture/Mock 基础设施验证，尚未在本
-修复后的 crash-safe Runner 尚未再次执行真实 Query Embedding，因此当前没有可恢复、已完成的
-真实 Retrieval Baseline Report，也不能据此决定 Stage 3 是否加入 BM25、Reranker、Query
-Rewrite 或调整 Chunk、阈值、Top-K 和权重。
+不等于 Evidence 真正支持对应 Claim。
+
+修复 crash-safe Runner 后，已在 commit `0d9f2fe` 上完成一次 10 案例、10 次真实
+Query Embedding、0 次 ChatModel 的 `local_real_retrieval` Baseline。报告记录的 Ranked
+Recall@1/3/5/10 为 `0.3333 / 0.8333 / 0.8333 / 0.9444`，MRR 为 `0.6111`，
+nDCG@5 为 `0.6422`；存在 1 个 Ranking Failure 和 1 个 Unanswerable Handling Failure。
+该报告绑定当时的 commit、Dataset 和 Index 指纹，不代表资料或索引变化后的当前指标。
+
+## Stage 3.1：BM25 + Dense Vector + RRF
+
+Stage 3.1 只改变 Candidate Generation 与 Ranking。Dense 保持 Top 10 和 0.25 阈值，
+BM25 从完整 Corpus 独立取 Top 10，RRF 使用 `k=60`；后续 Top 3 Seed、同源 ±2
+Adjacent Expansion、最多 8 个 Context Chunk、Evidence、Citation、Prompt 和 LLM
+流程保持不变。旧 Dense + Keyword Coverage 公式仍作为同次实验中的 Baseline。
+
+以下命令默认只显示费用边界，不打开索引、不创建 Embedding Client：
+
+```powershell
+python -m app.evaluate_hybrid_retrieval
+```
+
+显式确认后，每个 Stage 2 Retrieval Case 只调用一次真实 Query Embedding，同一次
+Dense 结果同时供 Baseline 与 Hybrid 使用；BM25、RRF 和报告聚合均为本地计算，
+Chat/LLM 调用为 0：
+
+```powershell
+python -m app.evaluate_hybrid_retrieval --confirm-query-embedding-cost
+```
+
+报告分别保存 Baseline/Hybrid 的 Recall@1/3/5/10、MRR、nDCG@5、指标差值、逐案例
+Gold 排名变化和两条 Pipeline 的本地延迟。代码与 Fixture/Mock 测试不能代替这次真实
+受控实验。
+
+2026-08-20 已在同一 disposable snapshot 上完成 10 个案例、10 次真实
+`text-embedding-v4` Query Embedding、0 次 ChatModel 的 `local_real_retrieval` A/B：
+
+- Recall@1：`0.3333 → 0.3333`
+- Recall@3：`0.8333 → 0.8333`
+- Recall@5：`0.8333 → 0.9444`
+- Recall@10：`0.9444 → 0.9444`
+- MRR：`0.6111 → 0.5778`
+- nDCG@5：`0.6422 → 0.6561`
+- 平均本地 Retrieval 延迟：`149.0 ms → 149.4 ms`
+
+Hybrid 把 `wishart_definition` 的最佳 Gold 从第 6 名提升到第 3 名，但把
+`cauchy_properties` 从第 2 名降到第 5 名，并把 `dirichlet_definition` 从第 2 名降到
+第 3 名。由于正式链路只选择 Top 3 Seed，Recall@3 没有提升且 MRR 下降，当前结论是
+“证明了 Sparse 独立召回的补充价值，但尚未证明 RRF 配置整体优于 Baseline”。因此
+正式问答继续使用 Stage 2 Baseline；Stage 3.2 是否引入 Reranker，应先扩大评测集并
+定位 RRF 的排序退化，而不是直接继续叠加组件。
 
 ## 最小 FastAPI 服务
 

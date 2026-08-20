@@ -27,7 +27,7 @@ class RAGServiceTests(unittest.TestCase):
     @patch("app.rag_service.open_vector_store")
     @patch("app.rag_service.create_langchain_embeddings")
     @patch("app.rag_service.EmbeddingConfig.from_environment")
-    def test_builds_service_with_the_current_retrieval_baseline(
+    def test_builds_service_with_stage2_baseline_retriever(
         self,
         embedding_config_from_environment: Mock,
         create_embeddings: Mock,

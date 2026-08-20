@@ -3,9 +3,15 @@ import unittest
 from langchain_core.documents import Document
 
 from app.hybrid_search import (
+    BM25Index,
+    BM25SearchResult,
+    HybridRRFRetriever,
     expand_adjacent_documents,
+    hybrid_rrf_search_vector_store,
     hybrid_search_vector_store,
     keyword_coverage,
+    reciprocal_rank_fusion,
+    tokenize_for_bm25,
 )
 
 
@@ -25,13 +31,18 @@ class FakeVectorStore:
     ) -> list[tuple[Document, float]]:
         return self.results[:k]
 
-    def get(self, where: dict[str, str], include: list[str]) -> dict[str, list]:
+    def get(
+        self,
+        include: list[str],
+        where: dict[str, str] | None = None,
+    ) -> dict[str, list]:
         documents = [
             document
             for document in self.stored_documents
-            if document.metadata.get("source") == where["source"]
+            if where is None or document.metadata.get("source") == where["source"]
         ]
         return {
+            "ids": [str(index) for index, _ in enumerate(documents)],
             "documents": [document.page_content for document in documents],
             "metadatas": [document.metadata for document in documents],
         }
@@ -209,6 +220,161 @@ class HybridSearchTests(unittest.TestCase):
             expand_adjacent_documents(vector_store, [], adjacent_window=-1)
         with self.assertRaisesRegex(ValueError, "数量"):
             expand_adjacent_documents(vector_store, [], context_limit=0)
+
+
+class BM25SearchTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.documents = [
+            Document(
+                page_content="LangChain LCEL 使用 Runnable 组合固定 RAG 流程。",
+                metadata={"source": "langchain.md", "chunk_index": 1},
+            ),
+            Document(
+                page_content="威沙特分布用于协方差矩阵建模。",
+                metadata={"source": "statistics.md", "chunk_index": 1},
+            ),
+            Document(
+                page_content="FastAPI 提供 OpenAPI 接口文档。",
+                metadata={"source": "api.md", "chunk_index": 1},
+            ),
+        ]
+        self.index = BM25Index.from_documents(self.documents)
+
+    def test_tokenizer_preserves_technical_terms_and_chinese_bigrams(self) -> None:
+        tokens = tokenize_for_bm25("FastAPI 与威沙特分布")
+
+        self.assertIn("fastapi", tokens)
+        self.assertIn("威沙", tokens)
+        self.assertIn("沙特", tokens)
+
+    def test_basic_recall_returns_score_and_rank(self) -> None:
+        results = self.index.search("LCEL Runnable", limit=3)
+
+        self.assertEqual(results[0].document.metadata["source"], "langchain.md")
+        self.assertGreater(results[0].score, 0.0)
+        self.assertEqual(results[0].rank, 1)
+
+    def test_chinese_exact_term_and_api_name_are_retrievable(self) -> None:
+        chinese = self.index.search("威沙特分布", limit=1)
+        api = self.index.search("FastAPI OpenAPI", limit=1)
+
+        self.assertEqual(chinese[0].document.metadata["source"], "statistics.md")
+        self.assertEqual(api[0].document.metadata["source"], "api.md")
+
+    def test_empty_or_unmatched_query_returns_no_results(self) -> None:
+        self.assertEqual(self.index.search("  ", limit=3), [])
+        self.assertEqual(self.index.search("PostgreSQL MVCC", limit=3), [])
+
+    def test_duplicate_document_is_indexed_once(self) -> None:
+        index = BM25Index.from_documents([self.documents[0], self.documents[0]])
+
+        self.assertEqual(len(index.documents), 1)
+        self.assertEqual(len(index.search("LCEL", limit=3)), 1)
+
+
+class RRFFusionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.dense_first = Document(
+            page_content="语义相关内容",
+            metadata={"source": "dense.md", "chunk_index": 1},
+        )
+        self.shared = Document(
+            page_content="RRF 融合内容",
+            metadata={"source": "shared.md", "chunk_index": 1},
+        )
+        self.sparse_only = Document(
+            page_content="精确术语 LCEL",
+            metadata={"source": "sparse.md", "chunk_index": 1},
+        )
+
+    def _bm25(self, document: Document, score: float, rank: int) -> BM25SearchResult:
+        chunk_id = BM25Index.from_documents([document]).chunk_ids[0]
+        return BM25SearchResult(document, chunk_id, score, rank)
+
+    def test_two_lists_fuse_shared_chunk_and_use_rank_formula(self) -> None:
+        results = reciprocal_rank_fusion(
+            [(self.dense_first, 0.9), (self.shared, 0.8)],
+            [self._bm25(self.shared, 4.2, 1), self._bm25(self.sparse_only, 3.1, 2)],
+            rrf_k=60,
+        )
+
+        self.assertIs(results[0].document, self.shared)
+        self.assertEqual(results[0].dense_rank, 2)
+        self.assertEqual(results[0].bm25_rank, 1)
+        self.assertAlmostEqual(results[0].rrf_score, 1 / 62 + 1 / 61)
+        self.assertEqual(len(results), 3)
+
+    def test_dense_only_and_bm25_only_results_are_retained(self) -> None:
+        dense_only = reciprocal_rank_fusion([(self.dense_first, 0.9)], [])
+        sparse_only = reciprocal_rank_fusion([], [self._bm25(self.sparse_only, 2.0, 1)])
+
+        self.assertEqual(dense_only[0].dense_rank, 1)
+        self.assertIsNone(dense_only[0].bm25_rank)
+        self.assertEqual(sparse_only[0].bm25_rank, 1)
+        self.assertIsNone(sparse_only[0].dense_rank)
+
+    def test_duplicate_dense_chunk_is_counted_once(self) -> None:
+        results = reciprocal_rank_fusion(
+            [(self.shared, 0.9), (self.shared, 0.8)],
+            [self._bm25(self.shared, 2.0, 1)],
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].dense_rank, 1)
+
+    def test_equal_rrf_scores_have_stable_chunk_id_order(self) -> None:
+        first = reciprocal_rank_fusion(
+            [(self.dense_first, 0.9)],
+            [self._bm25(self.sparse_only, 2.0, 1)],
+        )
+        second = reciprocal_rank_fusion(
+            [(self.dense_first, 0.9)],
+            [self._bm25(self.sparse_only, 2.0, 1)],
+        )
+
+        self.assertEqual(
+            [result.chunk_id for result in first],
+            [result.chunk_id for result in second],
+        )
+
+    def test_true_hybrid_can_recover_document_absent_from_dense_candidates(self) -> None:
+        store = FakeVectorStore(
+            [(self.dense_first, 0.9)],
+            [self.dense_first, self.sparse_only],
+        )
+
+        results = hybrid_rrf_search_vector_store(
+            "LCEL",
+            store,
+            limit=3,
+            dense_candidate_limit=1,
+            bm25_candidate_limit=1,
+        )
+
+        sources = [result.document.metadata["source"] for result in results]
+        self.assertIn("sparse.md", sources)
+        sparse_result = next(result for result in results if result.bm25_rank == 1)
+        self.assertIsNone(sparse_result.dense_rank)
+
+    def test_experimental_retriever_exposes_true_hybrid_results(self) -> None:
+        store = FakeVectorStore(
+            [(self.dense_first, 0.9)],
+            [self.dense_first, self.sparse_only],
+        )
+        retriever = HybridRRFRetriever.model_construct(
+            vector_store=store,
+            bm25_index=BM25Index.from_documents(store.stored_documents),
+            limit=3,
+            dense_candidate_limit=1,
+            bm25_candidate_limit=1,
+        )
+
+        results = retriever.invoke("LCEL")
+
+        self.assertEqual(
+            {document.metadata["source"] for document in results},
+            {"dense.md", "sparse.md"},
+        )
 
 
 if __name__ == "__main__":
