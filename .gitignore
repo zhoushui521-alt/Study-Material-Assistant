@@ -12,5 +12,6 @@ data/request_logs/
 data/crawl4ai_runtime/
 data/study_workflows/
 data/learning/
+data/jobs/
 data/models/
 evaluation/results/

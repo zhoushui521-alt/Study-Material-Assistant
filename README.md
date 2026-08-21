@@ -382,7 +382,12 @@ python -m uvicorn app.api:app --host 127.0.0.1 --port 8000 --no-access-log
   `{"url": "https://example.com/", "operation": "add"}`，安全抓取单个公开网页、
   使用 Crawl4AI 生成 Markdown 并暂存；不打开 Chroma，也不调用 Embedding 或 Chat；
 - `POST http://127.0.0.1:8000/api/materials/{upload_id}/index`：请求体必须为
-  `{"confirm_api_cost": true}`，明确确认后才提交文件并调用真实 Embedding；
+  `{"confirm_api_cost": true}`；明确确认后创建持久化后台任务并立即返回 `202`、
+  `job_id` 和初始状态，不在该请求内执行重解析、Embedding 或 Chroma 写入；批量入口
+  `/api/materials/batch/index` 使用同一任务契约；
+- `GET http://127.0.0.1:8000/api/jobs/{job_id}`：查询文档任务的
+  `pending / processing / completed / failed` 状态、粗粒度进度、失败原因和完成后的索引
+  摘要；
 - `DELETE http://127.0.0.1:8000/api/materials/{filename}`：请求体必须为
   `{"confirm_delete": true}`，删除资料文件和对应来源的 Chroma 记录，不调用 Embedding；
 - `GET http://127.0.0.1:8000/docs`：FastAPI 自动生成的 Swagger UI。
@@ -462,6 +467,22 @@ PostgreSQL、连接池和新迁移框架。当前只建立基于 UUID 和外键�
 没有认证授权；知道其他用户 UUID 的调用者仍可能访问其数据，因此不能作为公网多用户
 安全边界。数据库也未加密，不应保存密码、令牌或其他敏感凭据。完整设计与验证证据见
 `docs/stage5-1-completion-report.md`。
+
+## V2 Stage 5.2：Async Document Processing Pipeline
+
+`app/document_jobs.py` 使用独立 SQLite 数据库
+`data/jobs/document_jobs.sqlite3` 持久化文档 Job，并由单进程 `asyncio` Worker 串行消费。
+现有资料暂存与费用预估仍是零模型调用的同步本地校验；用户确认费用后，索引 API 只校验
+暂存文件、创建 `pending` Job 并返回，真正的资料重解析、Chunk 构建、Embedding、Chroma
+增量同步和 RAG 缓存失效由 Worker 完成。Worker 没有复制摄取实现，而是继续调用
+`MaterialManager.estimate_index_batches*()` 和 `commit_staged*()`，因此 Manifest 只读保护、
+单次/进程费用上限、文件补偿回滚和现有 Parser/Chunker/Embedding 契约保持不变。
+
+Job 支持 `pending`、`processing`、`completed`、`failed` 四种状态。进程重启时，尚未开始的
+`pending` Job 会继续处理；中断时已经是 `processing` 的 Job 会被明确标记为 `failed`，
+不会假装仍在执行，也不会在外部调用结果不确定时自动重复付费。当前进度是
+`0 / 10 / 100` 的阶段信号，不是 Embedding 百分比。完整设计、验证证据和边界见
+`docs/stage5-2-completion-report.md`。
 
 ## 阶段 7：LangGraph 学习规划工作流
 
@@ -648,6 +669,7 @@ node --check web\static\app.js
 | **当前已完成 14：阶段 6 LangChain Agent 工具编排** | 使用 `create_agent` 编排 `answer_from_materials`、`list_available_materials` 和 `preview_web_material` 三个受限工具；提供 `/api/agent`、单次费用确认、网页预览独立授权、模型/工具/总时限和单进程预算。 | Fake/Mock 验证工具选择、LCEL 回答与来源逐字保留、网页预览不入库、未授权拒绝、工具异常脱敏、重复付费工具限制、超时和 API 错误契约。 | 尚未调用真实工具调用模型，不能把自动测试当作真实 Agent 效果验收；没有索引、删除、任意文件或任意网络工具，也没有对话记忆和自定义 LangGraph 状态流。 |
 | **当前已完成 15：阶段 7 LangGraph 学习规划工作流** | 用显式 `StateGraph` 管理目标、受控 Agent 证据节点、三步计划、`interrupt` 确认、批准/拒绝分支、进度、复盘、一次手动重试和 SQLite 检查点删除。 | Fake/Mock 覆盖完整状态流、路由原因、费用确认、拒绝后停止、进度上限和隐私日志；真实 SQLite 文件关闭并重开后可以读取并恢复等待确认的线程。 | 尚未调用真实模型验收工作流效果；检查点是未加密的本地单实例数据，没有鉴权、跨实例锁、后台清理或任意对话长期记忆。 |
 | **当前已完成 16：V2 Stage 5.1 用户与持久化学习数据** | 服务端 UUID 用户、学习 Session、Tutor 消息、学习行为、版本迁移和 SQLite LangGraph checkpoint。 | 临时真实 SQLite 覆盖创建、归属隔离、历史查询和关闭重开后的 Tutor 续学；全量 Fake/Mock 自动化回归通过。 | 没有登录、OAuth、RBAC、加密、跨实例并发或生产备份；UUID 分区不等于公网鉴权。 |
+| **当前已完成 17：V2 Stage 5.2 异步文档处理** | SQLite Job、单进程后台 Worker、任务状态查询、启动恢复和失败落库；确认索引接口改为返回 `202 + job_id`。 | Fake/Mock 与临时真实 SQLite 覆盖单文件/批量成功、失败、去重、重启继续 pending、处理中断转 failed 和 API 查询；全量自动化回归通过。 | 暂存预解析仍同步；没有分布式队列、多实例抢占、自动重试、用户级资料隔离、负载测试或生产吞吐证据。 |
 
 ### 下一阶段与后续阶段
 

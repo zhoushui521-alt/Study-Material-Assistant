@@ -35,6 +35,14 @@ from app.agent_service import (
     AgentTimeoutError,
     create_agent_service,
 )
+from app.document_jobs import (
+    DOCUMENT_JOB_DB_PATH,
+    DocumentJobConflictError,
+    DocumentJobError,
+    DocumentJobNotFoundError,
+    DocumentJobRecord,
+    DocumentJobService,
+)
 from app.langchain_rag import LangChainRAGError, source_label
 from app.learning_data import (
     MAX_HISTORY_ITEMS,
@@ -47,7 +55,6 @@ from app.learning_data import (
     UserRecord,
 )
 from app.material_ingestion import (
-    BatchMaterialSyncResult,
     BatchStageResult,
     MaterialConflictError,
     MaterialDeleteResult,
@@ -57,7 +64,6 @@ from app.material_ingestion import (
     MaterialManager,
     MaterialNotFoundError,
     MaterialRollbackError,
-    MaterialSyncResult,
     MaterialTooLargeError,
     MaterialUpload,
     MaterialValidationError,
@@ -127,6 +133,7 @@ _service_lock = Lock()
 _workflow_service_lock = asyncio.Lock()
 _learning_data_lock = asyncio.Lock()
 _tutor_service_lock = asyncio.Lock()
+_document_job_service_lock = asyncio.Lock()
 request_logger = logging.getLogger("uvicorn.error")
 
 
@@ -418,23 +425,24 @@ class MaterialBatchIndexRequest(BaseModel):
         return value
 
 
-class MaterialIndexResponse(BaseModel):
-    filename: str
-    operation: Literal["add", "replace"]
-    status: Literal["indexed"] = "indexed"
-    added: int
-    deleted: int
-    unchanged: int
-    cleanup_pending: bool
-
-
-class MaterialBatchIndexResponse(BaseModel):
+class DocumentJobResultResponse(BaseModel):
     filenames: list[str]
-    status: Literal["indexed"] = "indexed"
     added: int
     deleted: int
     unchanged: int
     cleanup_pending: bool
+
+
+class DocumentJobResponse(BaseModel):
+    job_id: str
+    filenames: list[str]
+    status: Literal["pending", "processing", "completed", "failed"]
+    progress: int = Field(ge=0, le=100)
+    error_message: str | None
+    result: DocumentJobResultResponse | None
+    created_at: str
+    started_at: str | None
+    finished_at: str | None
 
 
 class MaterialResponse(BaseModel):
@@ -510,8 +518,39 @@ async def lifespan(api: FastAPI) -> AsyncIterator[None]:
                         separators=(",", ":"),
                     )
                 )
+        if (
+            getattr(api.state, "document_job_service", None) is None
+            and DOCUMENT_JOB_DB_PATH.is_file()
+        ):
+            try:
+                api.state.document_job_service = await DocumentJobService.open(
+                    material_manager=api.state.material_manager,
+                    operation_guard=api.state.operation_guard,
+                    invalidate_rag=lambda: invalidate_rag_service(api),
+                )
+            except Exception:
+                request_logger.error(
+                    json.dumps(
+                        {"event": "document_job_service_recovery_failed"},
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                )
         yield
     finally:
+        document_job_service = getattr(api.state, "document_job_service", None)
+        if document_job_service is not None:
+            try:
+                await document_job_service.close()
+            except Exception:
+                request_logger.error(
+                    json.dumps(
+                        {"event": "document_job_service_cleanup_failed"},
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                )
+        api.state.document_job_service = None
         workflow_service = getattr(api.state, "study_workflow_service", None)
         if workflow_service is not None:
             try:
@@ -558,6 +597,7 @@ app.state.agent_service = None
 app.state.tutor_service = None
 app.state.study_workflow_service = None
 app.state.learning_data_store = None
+app.state.document_job_service = None
 app.state.material_manager = MaterialManager()
 app.state.request_history_writer = RequestHistoryWriter()
 app.state.operation_guard = OperationGuard()
@@ -816,6 +856,33 @@ def get_operation_guard(request: Request) -> OperationGuard:
     return request.app.state.operation_guard
 
 
+async def get_document_job_service(
+    request: Request,
+    manager: Annotated[MaterialManager, Depends(get_material_manager)],
+    guard: Annotated[OperationGuard, Depends(get_operation_guard)],
+) -> DocumentJobService:
+    """按需打开任务数据库并启动单进程后台 Worker。"""
+    service = getattr(request.app.state, "document_job_service", None)
+    if service is not None:
+        return service
+    async with _document_job_service_lock:
+        service = getattr(request.app.state, "document_job_service", None)
+        if service is None:
+            try:
+                service = await DocumentJobService.open(
+                    material_manager=manager,
+                    operation_guard=guard,
+                    invalidate_rag=lambda: invalidate_rag_service(request.app),
+                )
+            except Exception as error:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="文档任务服务暂不可用。",
+                ) from error
+            request.app.state.document_job_service = service
+        return service
+
+
 def get_web_material_service(request: Request) -> WebMaterialService:
     """基于当前资料管理器构造轻量网页预览服务。"""
     return WebMaterialService(
@@ -899,6 +966,28 @@ def raise_learning_data_http_error(error: Exception) -> None:
     raise HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail="学习数据服务暂不可用。",
+    ) from error
+
+
+def raise_document_job_http_error(error: Exception) -> None:
+    if isinstance(error, DocumentJobNotFoundError):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="文档处理任务不存在。",
+        ) from error
+    if isinstance(error, DocumentJobConflictError):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+    if isinstance(error, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(error),
+        ) from error
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="文档任务服务暂不可用。",
     ) from error
 
 
@@ -994,6 +1083,25 @@ def learning_activity_response(
         activity_type=record.activity_type,
         created_at=record.created_at,
         metadata=record.metadata,
+    )
+
+
+def document_job_response(record: DocumentJobRecord) -> DocumentJobResponse:
+    result = (
+        DocumentJobResultResponse.model_validate(record.result)
+        if record.result is not None
+        else None
+    )
+    return DocumentJobResponse(
+        job_id=record.job_id,
+        filenames=list(record.filenames),
+        status=record.status,
+        progress=record.progress,
+        error_message=record.error_message,
+        result=result,
+        created_at=record.created_at,
+        started_at=record.started_at,
+        finished_at=record.finished_at,
     )
 
 
@@ -1337,75 +1445,63 @@ async def preview_web_material(
 
 @app.post(
     "/api/materials/batch/index",
-    response_model=MaterialBatchIndexResponse,
+    response_model=DocumentJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
 )
-def index_staged_material_batch(
+async def index_staged_material_batch(
     payload: MaterialBatchIndexRequest,
-    request: Request,
-    manager: Annotated[MaterialManager, Depends(get_material_manager)],
-    guard: Annotated[OperationGuard, Depends(get_operation_guard)],
-) -> MaterialBatchIndexResponse:
-    """一次确认后原子提交多个文件，并复用一次现有 Chroma 增量同步。"""
+    service: Annotated[DocumentJobService, Depends(get_document_job_service)],
+) -> DocumentJobResponse:
+    """一次确认后创建批量文档任务，不在请求内执行解析或 Embedding。"""
     try:
-        with guard.acquire("index") as lease:
-            lease.reserve_units(
-                manager.estimate_index_batches_batch(payload.upload_ids)
-            )
-            result: BatchMaterialSyncResult = manager.commit_staged_batch(
-                payload.upload_ids
-            )
-            invalidate_rag_service(request.app)
-    except OperationProtectionError as error:
-        raise_operation_http_error(error)
-        raise
+        job = await service.enqueue(payload.upload_ids)
     except Exception as error:
-        if isinstance(error, MaterialRollbackError):
-            invalidate_rag_service(request.app)
+        if isinstance(error, (DocumentJobError, ValueError)):
+            raise_document_job_http_error(error)
+            raise
         raise_material_http_error(error)
         raise
-    return MaterialBatchIndexResponse(
-        filenames=list(result.filenames),
-        added=result.added,
-        deleted=result.deleted,
-        unchanged=result.unchanged,
-        cleanup_pending=result.cleanup_pending,
-    )
+    return document_job_response(job)
 
 
 @app.post(
     "/api/materials/{upload_id}/index",
-    response_model=MaterialIndexResponse,
+    response_model=DocumentJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
 )
-def index_staged_material(
+async def index_staged_material(
     upload_id: str,
     payload: MaterialIndexRequest,
-    request: Request,
-    manager: Annotated[MaterialManager, Depends(get_material_manager)],
-    guard: Annotated[OperationGuard, Depends(get_operation_guard)],
-) -> MaterialIndexResponse:
-    """取得明确费用确认后提交文件并复用现有 Chroma 增量同步。"""
+    service: Annotated[DocumentJobService, Depends(get_document_job_service)],
+) -> DocumentJobResponse:
+    """取得明确费用确认后创建文档任务，并立即返回任务 ID。"""
     del payload
     try:
-        with guard.acquire("index") as lease:
-            lease.reserve_units(manager.estimate_index_batches(upload_id))
-            result: MaterialSyncResult = manager.commit_staged(upload_id)
-            invalidate_rag_service(request.app)
-    except OperationProtectionError as error:
-        raise_operation_http_error(error)
-        raise
+        job = await service.enqueue((upload_id,))
     except Exception as error:
-        if isinstance(error, MaterialRollbackError):
-            invalidate_rag_service(request.app)
+        if isinstance(error, (DocumentJobError, ValueError)):
+            raise_document_job_http_error(error)
+            raise
         raise_material_http_error(error)
         raise
-    return MaterialIndexResponse(
-        filename=result.filename,
-        operation=result.operation,
-        added=result.added,
-        deleted=result.deleted,
-        unchanged=result.unchanged,
-        cleanup_pending=result.cleanup_pending,
-    )
+    return document_job_response(job)
+
+
+@app.get(
+    "/api/jobs/{job_id}",
+    response_model=DocumentJobResponse,
+)
+async def get_document_job(
+    job_id: str,
+    service: Annotated[DocumentJobService, Depends(get_document_job_service)],
+) -> DocumentJobResponse:
+    """查询文档后台任务的持久化状态和最终索引摘要。"""
+    try:
+        job = await service.get_job(job_id)
+    except Exception as error:
+        raise_document_job_http_error(error)
+        raise
+    return document_job_response(job)
 
 
 @app.delete(

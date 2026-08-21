@@ -15,22 +15,25 @@ from langchain_core.documents import Document
 from app.api import (
     REQUEST_ID_HEADER,
     app,
+    get_document_job_service,
     get_material_manager,
     get_rag_service_provider,
     get_web_material_service,
     lifespan,
 )
+from app.document_jobs import (
+    DocumentJobConflictError,
+    DocumentJobRecord,
+    DocumentJobService,
+)
 from app.langchain_rag import LangChainRAGError, NO_EVIDENCE_ANSWER, RAGAnswer
 from app.evidence import Citation
 from app.material_ingestion import (
-    BatchMaterialSyncResult,
     BatchStageResult,
     IndexSyncSummary,
     MaterialDeleteResult,
-    MaterialIndexReadOnlyError,
     MaterialManager,
     MaterialRollbackError,
-    MaterialSyncResult,
     StagedMaterialFailure,
     StagedMaterial,
 )
@@ -45,11 +48,31 @@ from app.web_materials import (
 )
 
 
+def pending_document_job(
+    *,
+    filenames: tuple[str, ...] = ("notes.md",),
+) -> DocumentJobRecord:
+    return DocumentJobRecord(
+        job_id="11111111-1111-4111-8111-111111111111",
+        upload_ids=tuple(chr(97 + index) * 32 for index in range(len(filenames))),
+        filenames=filenames,
+        status="pending",
+        progress=0,
+        error_message=None,
+        result=None,
+        created_at="2026-08-21T00:00:00.000Z",
+        started_at=None,
+        finished_at=None,
+        updated_at="2026-08-21T00:00:00.000Z",
+    )
+
+
 class APITests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         app.dependency_overrides.clear()
         app.state.rag_service = None
+        app.state.document_job_service = None
         app.state.operation_guard = OperationGuard()
         app.state.request_history_writer = RequestHistoryWriter(
             Path(self.temporary_directory.name) / "requests.jsonl"
@@ -58,6 +81,7 @@ class APITests(unittest.TestCase):
     def tearDown(self) -> None:
         app.dependency_overrides.clear()
         app.state.rag_service = None
+        app.state.document_job_service = None
         self.temporary_directory.cleanup()
 
     def test_health_does_not_initialize_rag(self) -> None:
@@ -745,8 +769,9 @@ class APITests(unittest.TestCase):
         self.assertEqual(service.preview.await_count, 1)
 
     def test_index_requires_literal_cost_confirmation(self) -> None:
-        manager = Mock(spec=MaterialManager)
-        app.dependency_overrides[get_material_manager] = lambda: manager
+        service = Mock(spec=DocumentJobService)
+        service.enqueue = AsyncMock()
+        app.dependency_overrides[get_document_job_service] = lambda: service
 
         with TestClient(app) as client:
             response = client.post(
@@ -755,33 +780,12 @@ class APITests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 422)
-        manager.commit_staged.assert_not_called()
+        service.enqueue.assert_not_called()
 
-    def test_indexes_staged_upload_and_invalidates_cached_rag(self) -> None:
-        manager = Mock(spec=MaterialManager)
-        manager.estimate_index_batches.return_value = 1
-        manager.inspect_staged.return_value = StagedMaterial(
-            upload_id="a" * 32,
-            filename="notes.md",
-            operation="add",
-            size_bytes=12,
-            sha256="b" * 64,
-            document_units=1,
-            chunk_count=2,
-            embedding_batch_count=1,
-            staged_at="2026-08-09T10:00:00Z",
-        )
-        manager.commit_staged.return_value = MaterialSyncResult(
-            filename="notes.md",
-            operation="add",
-            added=2,
-            deleted=0,
-            unchanged=141,
-            cleanup_pending=False,
-        )
-        app.dependency_overrides[get_material_manager] = lambda: manager
-        cached_service = Mock(spec=RAGService)
-        app.state.rag_service = cached_service
+    def test_confirmed_index_returns_pending_job_without_running_pipeline(self) -> None:
+        service = Mock(spec=DocumentJobService)
+        service.enqueue = AsyncMock(return_value=pending_document_job())
+        app.dependency_overrides[get_document_job_service] = lambda: service
 
         with TestClient(app) as client:
             response = client.post(
@@ -789,26 +793,23 @@ class APITests(unittest.TestCase):
                 json={"confirm_api_cost": True},
             )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "indexed")
-        self.assertEqual(response.json()["added"], 2)
-        cached_service.close.assert_called_once_with()
-        self.assertIsNone(app.state.rag_service)
-
-    def test_indexes_staged_batch_once_and_invalidates_cached_rag(self) -> None:
-        manager = Mock(spec=MaterialManager)
-        upload_ids = ["a" * 32, "b" * 32]
-        manager.estimate_index_batches_batch.return_value = 2
-        manager.commit_staged_batch.return_value = BatchMaterialSyncResult(
-            filenames=("chapter.pdf", "notes.docx"),
-            added=4,
-            deleted=0,
-            unchanged=141,
-            cleanup_pending=False,
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json()["status"], "pending")
+        self.assertEqual(
+            response.json()["job_id"],
+            "11111111-1111-4111-8111-111111111111",
         )
-        app.dependency_overrides[get_material_manager] = lambda: manager
-        cached_service = Mock(spec=RAGService)
-        app.state.rag_service = cached_service
+        service.enqueue.assert_awaited_once_with(("a" * 32,))
+
+    def test_confirmed_batch_index_returns_one_pending_job(self) -> None:
+        upload_ids = ["a" * 32, "b" * 32]
+        service = Mock(spec=DocumentJobService)
+        service.enqueue = AsyncMock(
+            return_value=pending_document_job(
+                filenames=("chapter.pdf", "notes.docx")
+            )
+        )
+        app.dependency_overrides[get_document_job_service] = lambda: service
 
         with TestClient(app) as client:
             response = client.post(
@@ -816,21 +817,19 @@ class APITests(unittest.TestCase):
                 json={"upload_ids": upload_ids, "confirm_api_cost": True},
             )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 202)
         self.assertEqual(response.json()["filenames"], ["chapter.pdf", "notes.docx"])
-        manager.estimate_index_batches_batch.assert_called_once_with(upload_ids)
-        manager.commit_staged_batch.assert_called_once_with(upload_ids)
-        cached_service.close.assert_called_once_with()
-        self.assertIsNone(app.state.rag_service)
+        service.enqueue.assert_awaited_once_with(upload_ids)
 
-    def test_batch_index_reports_legacy_read_only_before_commit(self) -> None:
-        manager = Mock(spec=MaterialManager)
+    def test_duplicate_active_index_job_returns_conflict(self) -> None:
         upload_ids = ["a" * 32, "b" * 32]
-        manager.estimate_index_batches_batch.side_effect = MaterialIndexReadOnlyError(
-            "现有索引处于只读兼容性保护；未调用 Embedding，"
-            "未提交资料或写入新向量记录。"
+        service = Mock(spec=DocumentJobService)
+        service.enqueue = AsyncMock(
+            side_effect=DocumentJobConflictError(
+                "这些暂存资料已经有等待或正在处理的任务。"
+            )
         )
-        app.dependency_overrides[get_material_manager] = lambda: manager
+        app.dependency_overrides[get_document_job_service] = lambda: service
 
         with TestClient(app) as client:
             response = client.post(
@@ -839,24 +838,38 @@ class APITests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 409)
-        self.assertIn("只读兼容性保护", response.json()["detail"])
-        manager.commit_staged_batch.assert_not_called()
+        self.assertIn("已经有等待", response.json()["detail"])
 
-    def test_index_rejects_over_budget_staged_upload_before_commit(self) -> None:
-        manager = Mock(spec=MaterialManager)
-        manager.estimate_index_batches.return_value = 61
-        app.dependency_overrides[get_material_manager] = lambda: manager
+    def test_queries_completed_document_job(self) -> None:
+        record = pending_document_job()
+        completed = DocumentJobRecord(
+            **{
+                **record.__dict__,
+                "status": "completed",
+                "progress": 100,
+                "result": {
+                    "filenames": ["notes.md"],
+                    "added": 2,
+                    "deleted": 0,
+                    "unchanged": 141,
+                    "cleanup_pending": False,
+                },
+                "started_at": "2026-08-21T00:00:01.000Z",
+                "finished_at": "2026-08-21T00:00:02.000Z",
+            }
+        )
+        service = Mock(spec=DocumentJobService)
+        service.get_job = AsyncMock(return_value=completed)
+        app.dependency_overrides[get_document_job_service] = lambda: service
 
         with TestClient(app) as client:
-            response = client.post(
-                f"/api/materials/{'a' * 32}/index",
-                json={"confirm_api_cost": True},
+            response = client.get(
+                "/api/jobs/11111111-1111-4111-8111-111111111111"
             )
 
-        self.assertEqual(response.status_code, 429)
-        self.assertEqual(response.json(), {"detail": "单次操作超过费用保护上限。"})
-        manager.estimate_index_batches.assert_called_once_with("a" * 32)
-        manager.commit_staged.assert_not_called()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "completed")
+        self.assertEqual(response.json()["result"]["added"], 2)
 
     def test_delete_requires_confirmation_and_invalidates_rag(self) -> None:
         manager = Mock(spec=MaterialManager)

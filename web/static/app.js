@@ -428,9 +428,29 @@ async function confirmIndex() {
       );
       return;
     }
+    const jobId = String(payload.job_id || "");
+    if (!jobId) {
+      showMaterialMessage("error", "任务创建成功，但响应中缺少任务 ID。", requestId);
+      return;
+    }
     showMaterialMessage(
       "success",
-      `${batchItems.length ? `${batchItems.length} 个文件` : "资料"}索引完成：新增或更新 ${payload.added}，删除旧记录 ${payload.deleted}，未变化 ${payload.unchanged}。`,
+      `${batchItems.length ? `${batchItems.length} 个文件` : "资料"}已进入后台任务（${jobId.slice(0, 8)}…），可以继续使用页面。`,
+      requestId,
+    );
+    const completedJob = await waitForDocumentJob(jobId);
+    if (completedJob.status === "failed") {
+      showMaterialMessage(
+        "error",
+        String(completedJob.error_message || "资料后台处理失败。"),
+        requestId,
+      );
+      return;
+    }
+    const result = completedJob.result || {};
+    showMaterialMessage(
+      "success",
+      `${batchItems.length ? `${batchItems.length} 个文件` : "资料"}后台索引完成：新增或更新 ${Number(result.added || 0)}，删除旧记录 ${Number(result.deleted || 0)}，未变化 ${Number(result.unchanged || 0)}。`,
       requestId,
     );
     stagedUpload = null;
@@ -440,10 +460,33 @@ async function confirmIndex() {
     renderSelectedFiles();
     webPreviewForm.reset();
     await loadMaterials();
-  } catch {
-    showMaterialMessage("error", "无法连接资料索引 API。");
+  } catch (error) {
+    const message = error instanceof Error && error.message
+      ? error.message
+      : "无法连接资料索引 API。";
+    showMaterialMessage("error", message);
   } finally {
     setMaterialBusy(false);
+  }
+}
+
+async function waitForDocumentJob(jobId) {
+  while (true) {
+    await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, {
+      headers: { Accept: "application/json" },
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(String(payload.detail || "任务状态查询失败。"));
+    }
+    if (payload.status === "completed" || payload.status === "failed") {
+      return payload;
+    }
+    showMaterialMessage(
+      "success",
+      `后台正在处理资料：${Number(payload.progress || 0)}%（任务 ${jobId.slice(0, 8)}…）。`,
+    );
   }
 }
 
