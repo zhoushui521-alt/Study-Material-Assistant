@@ -10,6 +10,7 @@ const errorMessage = document.querySelector("#error-message");
 const errorRequestMeta = document.querySelector("#error-request-meta");
 const resultPanel = document.querySelector("#result-panel");
 const answer = document.querySelector("#answer");
+const citationList = document.querySelector("#citation-list");
 const sourcesList = document.querySelector("#sources-list");
 const emptySources = document.querySelector("#empty-sources");
 const requestMeta = document.querySelector("#request-meta");
@@ -30,6 +31,7 @@ const materialMessage = document.querySelector("#material-message");
 const materialMessageText = document.querySelector("#material-message-text");
 const materialRequestMeta = document.querySelector("#material-request-meta");
 const materialList = document.querySelector("#material-list");
+const materialCount = document.querySelector("#material-count");
 const emptyMaterials = document.querySelector("#empty-materials");
 const webPreviewForm = document.querySelector("#web-preview-form");
 const webMaterialUrl = document.querySelector("#web-material-url");
@@ -41,9 +43,58 @@ const webPreviewLink = document.querySelector("#web-preview-link");
 const webPreviewMeta = document.querySelector("#web-preview-meta");
 const webPreviewMarkdown = document.querySelector("#web-preview-markdown");
 
+const ragTab = document.querySelector("#rag-tab");
+const tutorTab = document.querySelector("#tutor-tab");
+const ragPanel = document.querySelector("#rag-panel");
+const tutorPanel = document.querySelector("#tutor-panel");
+const tutorSetup = document.querySelector("#tutor-setup");
+const tutorSessionForm = document.querySelector("#tutor-session-form");
+const tutorTopicInput = document.querySelector("#tutor-topic");
+const tutorSessionButton = document.querySelector("#tutor-session-button");
+const tutorChat = document.querySelector("#tutor-chat");
+const tutorThread = document.querySelector("#tutor-thread");
+const tutorEmpty = document.querySelector("#tutor-empty");
+const tutorForm = document.querySelector("#tutor-form");
+const tutorMessageInput = document.querySelector("#tutor-message");
+const tutorCostConfirm = document.querySelector("#tutor-cost-confirm");
+const tutorSubmit = document.querySelector("#tutor-submit");
+const tutorMessageState = document.querySelector("#tutor-message-state");
+const currentTopic = document.querySelector("#current-topic");
+const learningAction = document.querySelector("#learning-action");
+const learningActionNote = document.querySelector("#learning-action-note");
+const learningHistoryList = document.querySelector("#learning-history-list");
+const emptyLearningHistory = document.querySelector("#empty-learning-history");
+const refreshHistoryButton = document.querySelector("#refresh-history-button");
+const newSessionButton = document.querySelector("#new-session-button");
+
+const STORAGE_KEYS = {
+  userId: "zhixing.user_id",
+  sessionId: "zhixing.session_id",
+  topic: "zhixing.topic",
+};
+
+const ACTION_LABELS = {
+  answer_question: "回答资料问题",
+  explain_concept: "解释当前概念",
+  practice_quiz: "完成一次理解练习",
+  summarize_learning: "整理本次学习",
+  create_study_plan: "执行下一步计划",
+  insufficient_evidence: "补充可用资料",
+};
+
+const INTENT_LABELS = {
+  knowledge_qa: "资料问答",
+  explanation: "概念解释",
+  quiz: "理解练习",
+  summary: "学习总结",
+  study_plan: "学习规划",
+};
+
 let requestInProgress = false;
 let materialRequestInProgress = false;
+let tutorRequestInProgress = false;
 let stagedUpload = null;
+let tutorIdentity = readTutorIdentity();
 
 function updateCharacterCount() {
   charCount.textContent = `${questionInput.value.length} / 2000`;
@@ -62,7 +113,7 @@ async function checkHealth() {
     if (!response.ok) {
       throw new Error("health check failed");
     }
-    setApiState("online", "本地 API 已连接（不代表模型已调用）");
+    setApiState("online", "本地 API 已连接，不代表模型已调用");
   } catch {
     setApiState("offline", "本地 API 暂不可用");
   }
@@ -85,6 +136,28 @@ function messageForStatus(status) {
     return "服务器内部错误，请使用请求 ID 对照控制台日志。";
   }
   return "请求未成功，请检查输入后重试。";
+}
+
+function tutorMessageForStatus(status) {
+  if (status === 404) {
+    return "当前学习身份或 Session 已失效，请开始一个新主题。";
+  }
+  if (status === 429) {
+    return "Tutor 请求过于频繁、服务正忙或费用保护已触发，请稍后再试。";
+  }
+  if (status === 422) {
+    return "Tutor 输入或费用确认无效，请检查后重试。";
+  }
+  if (status === 502) {
+    return "Tutor 处理失败，未能返回可用结果。";
+  }
+  if (status === 503) {
+    return "本地学习数据服务暂不可用。";
+  }
+  if (status === 504) {
+    return "Tutor 处理超时，请稍后重试。";
+  }
+  return "Tutor 请求没有完成，请稍后重试。";
 }
 
 function materialMessageForStatus(status, detail = "") {
@@ -141,6 +214,19 @@ function formatFileSize(sizeBytes) {
   return `${(sizeBytes / 1024).toFixed(1)} KiB`;
 }
 
+function formatDate(value) {
+  const parsed = new Date(String(value || ""));
+  if (Number.isNaN(parsed.getTime())) {
+    return "时间未知";
+  }
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(parsed);
+}
+
 function showMaterialMessage(state, message, requestId = "") {
   materialMessage.dataset.state = state;
   materialMessageText.textContent = message;
@@ -181,7 +267,7 @@ function renderSelectedFiles() {
   selectedFileCount.textContent = files.length ? `已选择 ${files.length} 个文件` : "";
   for (const file of files) {
     const item = document.createElement("li");
-    item.textContent = `${file.name} · ${formatFileSize(file.size)}`;
+    item.textContent = `${file.name}，${formatFileSize(file.size)}`;
     selectedFileList.append(item);
   }
   selectedFiles.hidden = files.length === 0;
@@ -193,22 +279,22 @@ function renderBatchStageResult(payload) {
   stageFileResults.replaceChildren();
   for (const item of staged) {
     const result = document.createElement("li");
-    result.textContent = `成功：${String(item.filename)} · ${Number(item.chunk_count) || 0} 个文本块`;
+    result.textContent = `成功：${String(item.filename)}，${Number(item.chunk_count) || 0} 个文本块`;
     stageFileResults.append(result);
   }
   for (const item of failures) {
     const result = document.createElement("li");
-    result.textContent = `失败：${String(item.filename)} · ${String(item.reason)}`;
+    result.textContent = `失败：${String(item.filename)}，${String(item.reason)}`;
     stageFileResults.append(result);
   }
   stageFilename.textContent = staged.length
     ? `成功暂存 ${staged.length} 个文件`
     : "本批资料全部失败";
-  stageDetails.textContent = `成功 ${staged.length} 个，失败 ${failures.length} 个；失败文件未进入索引。`;
+  stageDetails.textContent = `成功 ${staged.length} 个，失败 ${failures.length} 个。失败文件未进入索引。`;
   const totalChunks = Number(payload.total_chunks) || 0;
   const totalBatches = Number(payload.embedding_batch_count) || 0;
   stageCost.textContent = staged.length
-    ? `成功文件共 ${totalChunks} 个文本块，按当前配置约 ${totalBatches} 个 Embedding 批次（单次上限 60）。`
+    ? `成功文件共 ${totalChunks} 个文本块，按当前配置约 ${totalBatches} 个 Embedding 批次，单次上限 60。`
     : "没有可确认写入索引的文件。";
   confirmIndexButton.hidden = staged.length === 0;
   stageSummary.hidden = false;
@@ -237,10 +323,11 @@ async function loadMaterials() {
     const payload = await response.json();
     const materials = Array.isArray(payload.materials) ? payload.materials : [];
     materialList.replaceChildren();
+    materialCount.textContent = String(materials.length);
     for (const material of materials) {
       const item = document.createElement("li");
       const label = document.createElement("span");
-      label.textContent = `${String(material.filename)} · ${formatFileSize(material.size_bytes)}`;
+      label.textContent = `${String(material.filename)}，${formatFileSize(material.size_bytes)}`;
       const deleteButton = document.createElement("button");
       deleteButton.type = "button";
       deleteButton.textContent = "删除";
@@ -253,6 +340,7 @@ async function loadMaterials() {
     }
     emptyMaterials.hidden = materials.length > 0;
   } catch {
+    materialCount.textContent = "0";
     showMaterialMessage("error", "无法读取当前资料列表。");
   }
 }
@@ -296,7 +384,7 @@ async function stageMaterial() {
       if (payload.status === "partial") {
         showMaterialMessage(
           "error",
-          "部分文件解析成功，请查看逐文件结果；成功文件尚未调用 Embedding。",
+          "部分文件解析成功，请查看逐文件结果。成功文件尚未调用 Embedding。",
           requestId,
         );
       } else if (payload.status === "failed") {
@@ -316,7 +404,6 @@ async function stageMaterial() {
         materialMessageForStatus(response.status, payload.detail),
         requestId,
       );
-      return;
     }
   } catch {
     showMaterialMessage("error", "无法连接资料上传 API。");
@@ -358,11 +445,11 @@ async function previewWebMaterial() {
 
     stagedUpload = payload;
     const operationLabel = payload.operation === "replace" ? "替换网页资料" : "新增网页资料";
-    stageFilename.textContent = `${payload.filename} · ${operationLabel} · ${formatFileSize(payload.size_bytes)}`;
+    stageFilename.textContent = `${payload.filename}，${operationLabel}，${formatFileSize(payload.size_bytes)}`;
     stageDetails.textContent = `解析为 ${payload.document_units} 个资料单元、${payload.chunk_count} 个文本块。`;
     stageFileResults.replaceChildren();
     confirmIndexButton.hidden = false;
-    stageCost.textContent = `网页预览不会产生模型费用；确认后约 ${payload.embedding_batch_count} 个 Embedding 批次（单次上限 60）。`;
+    stageCost.textContent = `网页预览不会产生模型费用。确认后约 ${payload.embedding_batch_count} 个 Embedding 批次，单次上限 60。`;
     stageSummary.hidden = false;
 
     webPreviewTitle.textContent = String(payload.title || "网页资料");
@@ -376,7 +463,7 @@ async function previewWebMaterial() {
     const redirectCount = Number.isInteger(payload.redirect_count)
       ? payload.redirect_count
       : 0;
-    webPreviewMeta.textContent = `Markdown ${String(payload.markdown || "").length} 字；重定向 ${redirectCount} 次；内容哈希 ${String(payload.content_sha256 || "").slice(0, 12)}…`;
+    webPreviewMeta.textContent = `Markdown ${String(payload.markdown || "").length} 字，重定向 ${redirectCount} 次，内容哈希 ${String(payload.content_sha256 || "").slice(0, 12)}…`;
     webPreviewMarkdown.textContent = String(payload.markdown || "");
     webPreview.hidden = false;
     showMaterialMessage(
@@ -435,7 +522,7 @@ async function confirmIndex() {
     }
     showMaterialMessage(
       "success",
-      `${batchItems.length ? `${batchItems.length} 个文件` : "资料"}已进入后台任务（${jobId.slice(0, 8)}…），可以继续使用页面。`,
+      `${batchItems.length ? `${batchItems.length} 个文件` : "资料"}已进入后台任务，任务编号 ${jobId.slice(0, 8)}…`,
       requestId,
     );
     const completedJob = await waitForDocumentJob(jobId);
@@ -450,7 +537,7 @@ async function confirmIndex() {
     const result = completedJob.result || {};
     showMaterialMessage(
       "success",
-      `${batchItems.length ? `${batchItems.length} 个文件` : "资料"}后台索引完成：新增或更新 ${Number(result.added || 0)}，删除旧记录 ${Number(result.deleted || 0)}，未变化 ${Number(result.unchanged || 0)}。`,
+      `${batchItems.length ? `${batchItems.length} 个文件` : "资料"}索引完成：新增或更新 ${Number(result.added || 0)}，删除旧记录 ${Number(result.deleted || 0)}，未变化 ${Number(result.unchanged || 0)}。`,
       requestId,
     );
     stagedUpload = null;
@@ -485,7 +572,7 @@ async function waitForDocumentJob(jobId) {
     }
     showMaterialMessage(
       "success",
-      `后台正在处理资料：${Number(payload.progress || 0)}%（任务 ${jobId.slice(0, 8)}…）。`,
+      `后台正在处理资料：${Number(payload.progress || 0)}%，任务 ${jobId.slice(0, 8)}…`,
     );
   }
 }
@@ -546,27 +633,67 @@ function clearOutput() {
   errorPanel.hidden = true;
   resultPanel.hidden = true;
   answer.textContent = "";
+  citationList.replaceChildren();
   sourcesList.replaceChildren();
   requestMeta.textContent = "";
+}
+
+function createCitationCard(citation) {
+  const card = document.createElement("article");
+  card.className = "citation-card";
+
+  const header = document.createElement("div");
+  header.className = "citation-card-header";
+  const filename = document.createElement("strong");
+  filename.textContent = String(citation.filename || citation.source || "未命名资料");
+  const location = document.createElement("span");
+  const page = Number.isInteger(citation.page) ? `第 ${citation.page} 页` : "无固定页码";
+  location.textContent = `${String(citation.citation_id || "Citation")}，${page}`;
+  header.append(filename, location);
+
+  const excerpt = document.createElement("p");
+  excerpt.className = "citation-excerpt";
+  excerpt.textContent = String(citation.excerpt || "当前 Citation 没有返回摘录。");
+
+  const locator = document.createElement("p");
+  locator.className = "citation-locator";
+  locator.textContent = `定位：${String(citation.locator || "未提供")}`;
+
+  card.append(header, excerpt, locator);
+  return card;
+}
+
+function renderCitations(citations, sources, target = citationList) {
+  target.replaceChildren();
+  sourcesList.replaceChildren();
+  const normalizedCitations = Array.isArray(citations) ? citations : [];
+  const normalizedSources = Array.isArray(sources) ? sources : [];
+
+  for (const citation of normalizedCitations) {
+    target.append(createCitationCard(citation));
+  }
+
+  if (!normalizedCitations.length) {
+    for (const source of normalizedSources) {
+      const item = document.createElement("li");
+      item.textContent = String(source);
+      sourcesList.append(item);
+    }
+  }
+
+  sourcesList.hidden = normalizedCitations.length > 0 || normalizedSources.length === 0;
+  emptySources.hidden = normalizedCitations.length > 0 || normalizedSources.length > 0;
 }
 
 function renderResult(payload, requestId) {
   answer.textContent = typeof payload.answer === "string" ? payload.answer : "";
   requestMeta.textContent = requestId ? `请求 ID：${requestId}` : "";
-
-  const sources = Array.isArray(payload.sources) ? payload.sources : [];
-  sourcesList.replaceChildren();
-  for (const source of sources) {
-    const item = document.createElement("li");
-    item.textContent = String(source);
-    sourcesList.append(item);
-  }
-  emptySources.hidden = sources.length > 0;
+  renderCitations(payload.citations, payload.sources);
   resultPanel.hidden = false;
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   resultPanel.scrollIntoView({
     behavior: reducedMotion ? "auto" : "smooth",
-    block: "start",
+    block: "nearest",
   });
 }
 
@@ -597,12 +724,7 @@ async function submitQuestion() {
       body: JSON.stringify({ question }),
     });
     const requestId = response.headers.get("X-Request-ID") || "";
-    let payload = {};
-    try {
-      payload = await response.json();
-    } catch {
-      payload = {};
-    }
+    const payload = await response.json().catch(() => ({}));
 
     if (!response.ok) {
       showError(messageForStatus(response.status), requestId);
@@ -617,6 +739,436 @@ async function submitQuestion() {
     submitButton.disabled = false;
     submitButton.removeAttribute("aria-busy");
     buttonLabel.textContent = "向资料提问";
+  }
+}
+
+function activateMode(mode) {
+  const showTutor = mode === "tutor";
+  ragTab.setAttribute("aria-selected", String(!showTutor));
+  tutorTab.setAttribute("aria-selected", String(showTutor));
+  ragPanel.hidden = showTutor;
+  tutorPanel.hidden = !showTutor;
+  if (showTutor) {
+    if (tutorIdentity.sessionId) {
+      tutorMessageInput.focus();
+    } else {
+      tutorTopicInput.focus();
+    }
+  } else {
+    questionInput.focus();
+  }
+}
+
+function safeStorageGet(key) {
+  try {
+    return window.localStorage.getItem(key) || "";
+  } catch {
+    return "";
+  }
+}
+
+function safeStorageSet(key, value) {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // 本地存储不可用时仍允许当前页面继续使用 Session。
+  }
+}
+
+function safeStorageRemove(key) {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // 本地存储不可用时只清理当前内存状态。
+  }
+}
+
+function readTutorIdentity() {
+  return {
+    userId: safeStorageGet(STORAGE_KEYS.userId),
+    sessionId: safeStorageGet(STORAGE_KEYS.sessionId),
+    topic: safeStorageGet(STORAGE_KEYS.topic),
+  };
+}
+
+function persistTutorIdentity() {
+  if (tutorIdentity.userId) {
+    safeStorageSet(STORAGE_KEYS.userId, tutorIdentity.userId);
+  }
+  if (tutorIdentity.sessionId) {
+    safeStorageSet(STORAGE_KEYS.sessionId, tutorIdentity.sessionId);
+  }
+  if (tutorIdentity.topic) {
+    safeStorageSet(STORAGE_KEYS.topic, tutorIdentity.topic);
+  }
+}
+
+function clearTutorSession() {
+  tutorIdentity.sessionId = "";
+  tutorIdentity.topic = "";
+  safeStorageRemove(STORAGE_KEYS.sessionId);
+  safeStorageRemove(STORAGE_KEYS.topic);
+  tutorChat.hidden = true;
+  tutorSetup.hidden = false;
+  currentTopic.textContent = "还没有学习主题";
+  learningAction.textContent = "等待第一次 Tutor 互动";
+  learningActionNote.textContent = "Tutor 返回的真实学习行动会显示在这里。";
+  newSessionButton.hidden = true;
+  learningHistoryList.replaceChildren();
+  emptyLearningHistory.hidden = false;
+  tutorMessageState.hidden = true;
+  tutorTopicInput.value = "";
+}
+
+function setTutorSessionReady() {
+  tutorSetup.hidden = true;
+  tutorChat.hidden = false;
+  currentTopic.textContent = tutorIdentity.topic || "未命名主题";
+  newSessionButton.hidden = false;
+}
+
+async function ensureTutorUser() {
+  if (tutorIdentity.userId) {
+    return tutorIdentity.userId;
+  }
+  const response = await fetch("/api/users", {
+    method: "POST",
+    headers: { Accept: "application/json" },
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.user_id) {
+    throw new Error("无法创建本地学习身份。");
+  }
+  tutorIdentity.userId = String(payload.user_id);
+  safeStorageSet(STORAGE_KEYS.userId, tutorIdentity.userId);
+  return tutorIdentity.userId;
+}
+
+async function createTutorSession(topic) {
+  if (tutorRequestInProgress) {
+    return;
+  }
+  tutorRequestInProgress = true;
+  tutorSessionButton.disabled = true;
+  tutorSessionButton.textContent = "正在建立学习空间…";
+  tutorMessageState.hidden = true;
+  try {
+    const userId = await ensureTutorUser();
+    const response = await fetch(`/api/users/${encodeURIComponent(userId)}/sessions`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ topic }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.session_id) {
+      throw new Error("无法创建学习 Session。");
+    }
+    tutorIdentity = {
+      userId,
+      sessionId: String(payload.session_id),
+      topic: String(payload.topic || topic),
+    };
+    persistTutorIdentity();
+    setTutorSessionReady();
+    clearTutorThread();
+    renderLearningHistory([]);
+    tutorMessageInput.focus();
+  } catch (error) {
+    showTutorState(
+      error instanceof Error ? error.message : "无法建立学习空间。",
+      "error",
+    );
+  } finally {
+    tutorRequestInProgress = false;
+    tutorSessionButton.disabled = false;
+    tutorSessionButton.textContent = "开始这个主题";
+  }
+}
+
+function clearTutorThread() {
+  for (const message of tutorThread.querySelectorAll(".thread-message")) {
+    message.remove();
+  }
+  tutorEmpty.hidden = false;
+}
+
+function appendThreadMessage(role, content, intent = "") {
+  tutorEmpty.hidden = true;
+  const wrapper = document.createElement("article");
+  wrapper.className = "thread-message";
+  wrapper.dataset.role = role;
+
+  const label = document.createElement("span");
+  label.textContent = role === "user"
+    ? "你"
+    : `AI Tutor${intent ? `，${INTENT_LABELS[intent] || intent}` : ""}`;
+  const text = document.createElement("p");
+  text.textContent = String(content || "");
+  wrapper.append(label, text);
+  tutorThread.append(wrapper);
+  tutorThread.scrollTop = tutorThread.scrollHeight;
+  return wrapper;
+}
+
+function appendTutorExtras(container, payload) {
+  const citations = Array.isArray(payload.citations) ? payload.citations : [];
+  const quiz = payload.quiz && typeof payload.quiz === "object" ? payload.quiz : null;
+  const summary = payload.summary && typeof payload.summary === "object" ? payload.summary : null;
+
+  if (citations.length) {
+    const extras = document.createElement("div");
+    extras.className = "thread-extras";
+    const heading = document.createElement("strong");
+    heading.textContent = "可核对 Citation";
+    extras.append(heading);
+    for (const citation of citations) {
+      extras.append(createCitationCard(citation));
+    }
+    container.append(extras);
+  }
+
+  if (quiz) {
+    const extras = document.createElement("div");
+    extras.className = "thread-extras";
+    const heading = document.createElement("strong");
+    heading.textContent = "理解练习";
+    const question = document.createElement("p");
+    question.textContent = String(quiz.question || "");
+    extras.append(heading, question);
+    const options = Array.isArray(quiz.options) ? quiz.options : [];
+    if (options.length) {
+      const list = document.createElement("ul");
+      for (const option of options) {
+        const item = document.createElement("li");
+        item.textContent = String(option);
+        list.append(item);
+      }
+      extras.append(list);
+    }
+    container.append(extras);
+  }
+
+  if (summary) {
+    const extras = document.createElement("div");
+    extras.className = "thread-extras";
+    const heading = document.createElement("strong");
+    heading.textContent = "学习总结";
+    const text = document.createElement("p");
+    text.textContent = String(summary.summary || "");
+    extras.append(heading, text);
+    const nextSteps = Array.isArray(summary.next_steps) ? summary.next_steps : [];
+    if (nextSteps.length) {
+      const list = document.createElement("ul");
+      for (const step of nextSteps) {
+        const item = document.createElement("li");
+        item.textContent = String(step);
+        list.append(item);
+      }
+      extras.append(list);
+    }
+    container.append(extras);
+  }
+}
+
+function showTutorState(message, state = "error") {
+  tutorMessageState.textContent = message;
+  tutorMessageState.dataset.state = state;
+  tutorMessageState.hidden = false;
+}
+
+function updateLearningAction(payload) {
+  const action = String(payload.learning_action || "");
+  learningAction.textContent = ACTION_LABELS[action] || action || "等待下一次 Tutor 互动";
+  const intent = INTENT_LABELS[String(payload.intent || "")] || "学习";
+  learningActionNote.textContent = `本次由 Tutor 的“${intent}”路径返回。`;
+  if (payload.topic) {
+    tutorIdentity.topic = String(payload.topic);
+    currentTopic.textContent = tutorIdentity.topic;
+    safeStorageSet(STORAGE_KEYS.topic, tutorIdentity.topic);
+  }
+}
+
+function renderLearningHistory(records) {
+  const normalized = Array.isArray(records) ? records : [];
+  const recent = [...normalized]
+    .sort((left, right) => new Date(right.created_at) - new Date(left.created_at))
+    .slice(0, 6);
+  learningHistoryList.replaceChildren();
+  for (const record of recent) {
+    const item = document.createElement("li");
+    const action = ACTION_LABELS[String(record.activity_type || "")]
+      || INTENT_LABELS[String(record.activity_type || "")]
+      || String(record.activity_type || "学习活动");
+    item.append(document.createTextNode(`${String(record.topic || "未命名主题")}：${action}`));
+    const time = document.createElement("time");
+    time.dateTime = String(record.created_at || "");
+    time.textContent = formatDate(record.created_at);
+    item.append(time);
+    learningHistoryList.append(item);
+  }
+  emptyLearningHistory.hidden = recent.length > 0;
+}
+
+function renderTutorHistory(messages) {
+  clearTutorThread();
+  const normalized = Array.isArray(messages) ? messages : [];
+  const recent = [...normalized]
+    .sort((left, right) => new Date(left.created_at) - new Date(right.created_at))
+    .slice(-20);
+  for (const message of recent) {
+    appendThreadMessage(
+      String(message.role || "") === "tutor" ? "tutor" : "user",
+      String(message.content || ""),
+      String(message.intent || ""),
+    );
+  }
+}
+
+async function loadLearningHistory({ renderThread = true } = {}) {
+  if (!tutorIdentity.userId || !tutorIdentity.sessionId) {
+    renderLearningHistory([]);
+    return;
+  }
+  refreshHistoryButton.disabled = true;
+  try {
+    const target = `/api/users/${encodeURIComponent(tutorIdentity.userId)}/history?session_id=${encodeURIComponent(tutorIdentity.sessionId)}`;
+    const response = await fetch(target, {
+      headers: { Accept: "application/json" },
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 404) {
+        clearTutorSession();
+      }
+      throw new Error("无法读取最近学习记录。");
+    }
+    if (renderThread) {
+      renderTutorHistory(payload.messages);
+    }
+    renderLearningHistory(payload.learning_records);
+  } catch (error) {
+    showTutorState(
+      error instanceof Error ? error.message : "无法读取最近学习记录。",
+      "error",
+    );
+  } finally {
+    refreshHistoryButton.disabled = false;
+  }
+}
+
+async function submitTutorMessage() {
+  const message = tutorMessageInput.value.trim();
+  if (!tutorIdentity.userId || !tutorIdentity.sessionId) {
+    clearTutorSession();
+    showTutorState("请先创建一个学习主题。", "error");
+    tutorTopicInput.focus();
+    return;
+  }
+  if (!message) {
+    showTutorState("请输入你想和 Tutor 学习的内容。", "error");
+    tutorMessageInput.focus();
+    return;
+  }
+  if (!tutorCostConfirm.checked) {
+    showTutorState("请先确认本次 Tutor 请求会产生模型 API 费用。", "error");
+    tutorCostConfirm.focus();
+    return;
+  }
+  if (tutorRequestInProgress) {
+    return;
+  }
+
+  tutorRequestInProgress = true;
+  tutorSubmit.disabled = true;
+  tutorSubmit.textContent = "Tutor 正在处理…";
+  tutorMessageState.hidden = true;
+
+  try {
+    const response = await fetch("/api/tutor/chat", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        user_id: tutorIdentity.userId,
+        session_id: tutorIdentity.sessionId,
+        message,
+        confirm_api_cost: true,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 404) {
+        clearTutorSession();
+      }
+      showTutorState(tutorMessageForStatus(response.status), "error");
+      return;
+    }
+
+    appendThreadMessage("user", message);
+    const tutorReply = appendThreadMessage(
+      "tutor",
+      String(payload.answer || ""),
+      String(payload.intent || ""),
+    );
+    appendTutorExtras(tutorReply, payload);
+    updateLearningAction(payload);
+    tutorMessageInput.value = "";
+    tutorCostConfirm.checked = false;
+    showTutorState("Tutor 已完成本次学习请求，结果已写入本地学习记录。", "success");
+    await loadLearningHistory({ renderThread: false });
+  } catch {
+    showTutorState("无法连接 Tutor API，请确认本地服务仍在运行。", "error");
+  } finally {
+    tutorRequestInProgress = false;
+    tutorSubmit.disabled = false;
+    tutorSubmit.textContent = "发送给 AI Tutor";
+  }
+}
+
+function initializeTutor() {
+  if (tutorIdentity.sessionId && tutorIdentity.userId) {
+    setTutorSessionReady();
+    void loadLearningHistory();
+  } else {
+    clearTutorSession();
+  }
+}
+
+function initializeRevealAnimations() {
+  const targets = Array.from(document.querySelectorAll("[data-reveal]"));
+  if (!targets.length) {
+    return;
+  }
+  document.documentElement.classList.add("reveal-ready");
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reduceMotion || !("IntersectionObserver" in window)) {
+    for (const target of targets) {
+      target.classList.add("is-visible");
+    }
+    return;
+  }
+
+  const observer = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) {
+          entry.target.classList.add("is-visible");
+          observer.unobserve(entry.target);
+        }
+      }
+    },
+    {
+      rootMargin: "0px 0px -10% 0px",
+      threshold: 0.12,
+    },
+  );
+  for (const target of targets) {
+    observer.observe(target);
   }
 }
 
@@ -655,7 +1207,35 @@ webOperation.addEventListener("change", () => {
 confirmIndexButton.addEventListener("click", () => {
   void confirmIndex();
 });
+ragTab.addEventListener("click", () => {
+  activateMode("rag");
+});
+tutorTab.addEventListener("click", () => {
+  activateMode("tutor");
+});
+tutorSessionForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const topic = tutorTopicInput.value.trim();
+  if (!topic) {
+    tutorTopicInput.focus();
+    return;
+  }
+  void createTutorSession(topic);
+});
+tutorForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void submitTutorMessage();
+});
+newSessionButton.addEventListener("click", () => {
+  clearTutorSession();
+  activateMode("tutor");
+});
+refreshHistoryButton.addEventListener("click", () => {
+  void loadLearningHistory();
+});
 
+initializeRevealAnimations();
 updateCharacterCount();
+initializeTutor();
 void checkHealth();
 void loadMaterials();

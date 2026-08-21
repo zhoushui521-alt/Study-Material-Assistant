@@ -129,11 +129,15 @@ class APITests(unittest.TestCase):
                     page = client.get("/")
                     stylesheet = client.get("/static/styles.css")
                     script = client.get("/static/app.js")
+                    hero_image = client.get("/static/zhixing-hero.png")
 
         self.assertEqual(page.status_code, 200)
         self.assertIn("text/html", page.headers["content-type"])
-        self.assertIn("智能学习资料助手", page.text)
+        self.assertIn("知行 | Zhixing AI Learning Companion", page.text)
         self.assertIn('id="ask-form"', page.text)
+        self.assertIn('id="citation-list"', page.text)
+        self.assertIn('id="tutor-form"', page.text)
+        self.assertIn('id="learning-history-list"', page.text)
         self.assertIn('id="web-preview-form"', page.text)
         self.assertIn(".docx", page.text)
         self.assertIn(
@@ -148,22 +152,27 @@ class APITests(unittest.TestCase):
 
         self.assertEqual(stylesheet.status_code, 200)
         self.assertIn("text/css", stylesheet.headers["content-type"])
-        self.assertIn("@media (max-width: 760px)", stylesheet.text)
+        self.assertIn("@media (max-width: 720px)", stylesheet.text)
 
         self.assertEqual(script.status_code, 200)
         self.assertIn("javascript", script.headers["content-type"])
         self.assertIn('fetch("/health"', script.text)
         self.assertIn('fetch("/api/ask"', script.text)
+        self.assertIn('fetch("/api/tutor/chat"', script.text)
         self.assertIn('fetch("/api/materials/stage-batch"', script.text)
         self.assertIn('"/api/materials/batch/index"', script.text)
         self.assertIn("单次上限 60", script.text)
+        self.assertIn("confirm_api_cost: true", script.text)
+        self.assertIn("IntersectionObserver", script.text)
         self.assertIn("textContent", script.text)
         self.assertNotIn("innerHTML", script.text)
+        self.assertEqual(hero_image.status_code, 200)
+        self.assertIn("image/png", hero_image.headers["content-type"])
         create_service.assert_not_called()
         request_paths = [
             json.loads(record.getMessage())["path"] for record in captured.records
         ]
-        self.assertEqual(request_paths, ["/", "/static", "/static"])
+        self.assertEqual(request_paths, ["/", "/static", "/static", "/static"])
 
     def test_ask_returns_answer_and_source_labels(self) -> None:
         service = Mock(spec=RAGService)

@@ -5,56 +5,189 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta
       name="description"
-      content="基于已索引学习资料回答问题，并展示可核对来源。"
+      content="知行是一位基于个人学习资料工作的 AI 学习伙伴，帮助你理解知识、核对证据并持续学习。"
     >
-    <title>智能学习资料助手</title>
+    <meta name="theme-color" content="#f3f0e8">
+    <title>知行 | Zhixing AI Learning Companion</title>
+    <link rel="preload" href="/static/zhixing-hero.png" as="image" fetchpriority="high">
     <link rel="stylesheet" href="/static/styles.css">
   </head>
   <body>
-    <main class="page-shell">
-      <section class="intro" aria-labelledby="page-title">
-        <div>
-          <p class="eyebrow">STUDY MATERIAL RAG</p>
-          <h1 id="page-title">问自己的资料，<br>得到有出处的答案。</h1>
-          <p class="lede">
-            从已经索引的 TXT、Markdown、DOCX 和 PDF 中检索证据。资料不足时，助手会明确拒答。
-          </p>
+    <a class="skip-link" href="#learn">跳到学习空间</a>
+
+    <header class="site-header" id="top">
+      <nav class="site-nav" aria-label="主导航">
+        <a class="brand" href="#top" aria-label="知行首页">
+          <span class="brand-mark" aria-hidden="true">知</span>
+          <span>
+            <strong>知行</strong>
+            <small>Zhixing AI</small>
+          </span>
+        </a>
+        <div class="nav-links">
+          <a href="#why">产品理念</a>
+          <a href="#capabilities">核心能力</a>
+          <a href="#trust">可信回答</a>
         </div>
+        <a class="nav-cta" href="#learn">开始学习</a>
+      </nav>
+    </header>
 
-        <ul class="feature-list" aria-label="问答特点">
-          <li><span>01</span>仅基于资料</li>
-          <li><span>02</span>来源可核对</li>
-          <li><span>03</span>无证据拒答</li>
-        </ul>
+    <main>
+      <section class="hero section-shell" aria-labelledby="page-title">
+        <div class="hero-copy" data-reveal>
+          <p class="hero-brand">ZHIXING AI LEARNING COMPANION</p>
+          <h1 id="page-title">让知识被理解，<br>让学习真正发生。</h1>
+          <p class="hero-lede">基于你的资料回答、解释、练习和总结，每一步都有证据可核对。</p>
+          <a class="primary-cta" href="#learn">开始学习</a>
+        </div>
+        <figure class="hero-visual" data-reveal data-reveal-delay="1">
+          <img
+            src="/static/zhixing-hero.png"
+            width="1122"
+            height="1402"
+            alt="层叠的学习资料通过金色证据线汇聚成清晰知识的抽象场景"
+            fetchpriority="high"
+          >
+          <figcaption>
+            <span>知</span>
+            <p>理解知识</p>
+            <span>行</span>
+            <p>应用知识</p>
+          </figcaption>
+        </figure>
+      </section>
 
-        <div class="api-state" id="api-state" data-state="checking" role="status">
-          <span class="state-dot" aria-hidden="true"></span>
-          <span id="api-state-text">正在检查本地 API…</span>
+      <section class="belief-section section-shell" id="why" aria-labelledby="belief-title">
+        <div class="belief-statement" data-reveal>
+          <p>资料被收藏，不等于知识被掌握。</p>
+          <h2 id="belief-title">知行把分散的资料，变成可以追问、理解和继续行动的学习过程。</h2>
+        </div>
+        <div class="belief-notes" data-reveal data-reveal-delay="1">
+          <p>知，是看见概念之间的联系。</p>
+          <p>行，是知道下一步应该做什么。</p>
+          <strong>知行合一，学习才真正发生。</strong>
         </div>
       </section>
 
-      <section class="workspace" aria-labelledby="ask-title">
-        <header class="workspace-header">
-          <div>
-            <p class="section-kicker">ASK YOUR MATERIALS</p>
-            <h2 id="ask-title">向学习资料提问</h2>
-          </div>
-          <a href="/docs" target="_blank" rel="noreferrer">API 文档 ↗</a>
+      <section class="capabilities-section section-shell" id="capabilities" aria-labelledby="capabilities-title">
+        <header class="section-heading" data-reveal>
+          <h2 id="capabilities-title">从资料开始，走向真正理解</h2>
+          <p>技术在后台工作，用户只需要专注于学习。</p>
         </header>
 
-        <section class="materials-panel" aria-labelledby="materials-title">
-          <header class="materials-header">
+        <div class="capability-grid">
+          <article class="capability capability-materials" data-reveal>
             <div>
-              <p class="section-kicker">MATERIALS</p>
-              <h2 id="materials-title">上传学习资料</h2>
+              <p class="capability-index">理解你的资料</p>
+              <h3>把阅读负担，变成可探索的知识空间。</h3>
+              <p>上传 PDF、Word、Markdown、课程资料、论文或笔记，知行完成解析与索引。</p>
             </div>
-            <p>先本地解析，再确认 Embedding 费用。</p>
+            <div class="format-orbit" aria-label="支持的资料格式">
+              <span>PDF</span>
+              <span>DOCX</span>
+              <span>MD</span>
+              <span>TXT</span>
+              <strong>知识库</strong>
+            </div>
+          </article>
+
+          <article class="capability capability-dialogue" data-reveal data-reveal-delay="1">
+            <p class="capability-index">和知识对话</p>
+            <h3>答案不只出现，还能回到出处。</h3>
+            <p>每次回答都可以关联文件、页码、Evidence 摘录和定位信息。</p>
+            <div class="citation-miniature" aria-label="Citation 信息结构">
+              <span>文件名称</span>
+              <span>页码</span>
+              <span>Evidence excerpt</span>
+              <span>定位信息</span>
+            </div>
+          </article>
+
+          <article class="capability capability-tutor" data-reveal data-reveal-delay="2">
+            <p class="capability-index">AI Tutor</p>
+            <h3>不止查找答案，也陪你把知识学会。</h3>
+            <ul>
+              <li>解释概念</li>
+              <li>生成练习</li>
+              <li>总结内容</li>
+              <li>规划下一步</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="trust-section" id="trust" aria-labelledby="trust-title">
+        <div class="section-shell trust-layout">
+          <header class="trust-copy" data-reveal>
+            <p class="section-kicker">WHY THE ANSWER IS TRUSTWORTHY</p>
+            <h2 id="trust-title">可信，不是因为 AI 说得像真的。</h2>
+            <p>可信来自一条可以回看、检查和定位的证据路径。</p>
           </header>
 
-          <form id="upload-form" class="upload-form" enctype="multipart/form-data">
-            <div class="upload-fields">
+          <ol class="evidence-flow" aria-label="知行可信回答流程" data-reveal data-reveal-delay="1">
+            <li><span>你的资料</span><small>原始学习内容</small></li>
+            <li><span>智能解析</span><small>保留来源与结构</small></li>
+            <li><span>知识检索</span><small>找到相关 Evidence</small></li>
+            <li><span>Citation 引用</span><small>绑定文件与位置</small></li>
+            <li><span>AI 回答</span><small>资料不足时明确拒答</small></li>
+          </ol>
+
+          <aside class="evidence-contract" data-reveal data-reveal-delay="2">
+            <div class="contract-heading">
+              <span>S1</span>
+              <strong>Citation 返回结构</strong>
+            </div>
+            <dl>
+              <div><dt>filename</dt><dd>资料文件</dd></div>
+              <div><dt>page</dt><dd>PDF 页码</dd></div>
+              <div><dt>excerpt</dt><dd>支持回答的摘录</dd></div>
+              <div><dt>locator</dt><dd>可核对定位</dd></div>
+            </dl>
+          </aside>
+        </div>
+      </section>
+
+      <section class="tutor-story section-shell" aria-labelledby="tutor-story-title">
+        <div class="tutor-story-copy" data-reveal>
+          <h2 id="tutor-story-title">AI Tutor 已经在这里。</h2>
+          <p>它使用现有 Tutor 工作流，根据真实意图选择问答、解释、练习、总结或学习规划。</p>
+        </div>
+        <div class="tutor-actions" data-reveal data-reveal-delay="1" aria-label="AI Tutor 已实现能力">
+          <article><strong>解释</strong><p>换一种更容易理解的方式说明概念。</p></article>
+          <article><strong>练习</strong><p>根据资料生成可回答的练习与解释。</p></article>
+          <article><strong>总结</strong><p>整理已经出现的学习内容和关键点。</p></article>
+          <article><strong>下一步</strong><p>给出有限、明确的学习行动建议。</p></article>
+        </div>
+      </section>
+
+      <section class="learning-space" id="learn" aria-labelledby="learn-title">
+        <div class="workspace-intro section-shell" data-reveal>
+          <div>
+            <p class="section-kicker">REAL LEARNING SPACE</p>
+            <h2 id="learn-title">进入你的学习空间</h2>
+            <p>下面不是产品截图。资料、问答、Tutor 和学习记录都连接当前真实 API。</p>
+          </div>
+          <div class="api-state" id="api-state" data-state="checking" role="status">
+            <span class="state-dot" aria-hidden="true"></span>
+            <span id="api-state-text">正在检查本地 API…</span>
+          </div>
+        </div>
+
+        <div class="workspace-shell" data-reveal>
+          <aside class="materials-column" aria-labelledby="materials-title">
+            <header class="workspace-column-heading">
               <div>
-                <label for="material-file">资料文件（可多选）</label>
+                <span>资料管理</span>
+                <h3 id="materials-title">我的知识库</h3>
+              </div>
+              <a href="/docs" target="_blank" rel="noreferrer">API 文档</a>
+            </header>
+
+            <details class="workspace-disclosure" open>
+              <summary>上传资料</summary>
+              <form id="upload-form" class="upload-form" enctype="multipart/form-data">
+                <label for="material-file">资料文件，可多选</label>
                 <input
                   id="material-file"
                   name="files"
@@ -63,163 +196,216 @@
                   multiple
                   required
                 >
-              </div>
-              <div>
-                <label for="upload-operation">操作</label>
+                <label for="upload-operation">资料操作</label>
                 <select id="upload-operation" name="operation">
                   <option value="add">新增资料</option>
                   <option value="replace">明确替换同名资料</option>
                 </select>
-              </div>
-            </div>
-            <div class="selected-files" id="selected-files" aria-live="polite" hidden>
-              <strong id="selected-file-count"></strong>
-              <ul id="selected-file-list"></ul>
-            </div>
-            <div class="material-actions">
-              <button id="stage-button" class="secondary-button" type="submit">
-                本地校验与解析
-              </button>
-              <p>
-                支持 UTF-8 TXT、Markdown、DOCX 和带文字层 PDF；单次最多 20 个文件，
-                单文件最大 10 MiB，预计最多 60 个 Embedding 批次。
-              </p>
-            </div>
-          </form>
+                <div class="selected-files" id="selected-files" aria-live="polite" hidden>
+                  <strong id="selected-file-count"></strong>
+                  <ul id="selected-file-list"></ul>
+                </div>
+                <button id="stage-button" class="secondary-button" type="submit">本地校验与解析</button>
+                <p class="field-note">支持 TXT、Markdown、DOCX 和带文字层 PDF。单文件最大 10 MiB，预计最多 60 个 Embedding 批次。</p>
+              </form>
+            </details>
 
-          <section class="web-import" aria-labelledby="web-import-title">
-            <header class="web-import-header">
-              <div>
-                <p class="section-kicker">PUBLIC WEB PAGE</p>
-                <h3 id="web-import-title">导入公开网页</h3>
+            <details class="workspace-disclosure">
+              <summary>导入公开网页</summary>
+              <form id="web-preview-form" class="web-preview-form" novalidate>
+                <label for="web-material-url">公开网页 URL</label>
+                <input
+                  id="web-material-url"
+                  name="url"
+                  type="url"
+                  maxlength="2048"
+                  placeholder="https://example.com/course/rag"
+                  autocomplete="url"
+                  required
+                >
+                <label for="web-operation">网页资料操作</label>
+                <select id="web-operation" name="operation">
+                  <option value="add">新增网页资料</option>
+                  <option value="replace">重新抓取并替换</option>
+                </select>
+                <button id="web-preview-button" class="secondary-button" type="submit">安全抓取并预览</button>
+                <p class="field-note">只抓取公开、免登录的 HTTP(S) 单页，确认后才写入索引。</p>
+              </form>
+              <div class="web-preview" id="web-preview" hidden>
+                <div class="web-preview-heading">
+                  <strong id="web-preview-title"></strong>
+                  <a id="web-preview-link" target="_blank" rel="noreferrer"></a>
+                </div>
+                <p id="web-preview-meta"></p>
+                <pre id="web-preview-markdown" tabindex="0"></pre>
               </div>
-              <p>先安全抓取单页并查看 Markdown，确认后才写入索引。</p>
+            </details>
+
+            <div class="stage-summary" id="stage-summary" hidden>
+              <div>
+                <strong id="stage-filename"></strong>
+                <p id="stage-details"></p>
+                <ul id="stage-file-results"></ul>
+                <p class="cost-warning" id="stage-cost"></p>
+              </div>
+              <button id="confirm-index-button" type="button">确认费用并创建任务</button>
+            </div>
+
+            <div class="material-message" id="material-message" role="status" hidden>
+              <p id="material-message-text"></p>
+              <p class="request-meta" id="material-request-meta" hidden></p>
+            </div>
+
+            <div class="material-library">
+              <div class="library-heading">
+                <h4>当前资料</h4>
+                <span id="material-count">0</span>
+              </div>
+              <ul id="material-list"></ul>
+              <p class="empty-state" id="empty-materials" hidden>还没有资料。上传第一份内容后，知识库会出现在这里。</p>
+            </div>
+          </aside>
+
+          <section class="learning-column" aria-labelledby="learning-column-title">
+            <header class="learning-mode-header">
+              <div>
+                <span>AI 学习区域</span>
+                <h3 id="learning-column-title">和你的知识一起思考</h3>
+              </div>
+              <div class="mode-tabs" role="tablist" aria-label="学习模式">
+                <button id="rag-tab" type="button" role="tab" aria-selected="true" aria-controls="rag-panel">资料问答</button>
+                <button id="tutor-tab" type="button" role="tab" aria-selected="false" aria-controls="tutor-panel">AI Tutor</button>
+              </div>
             </header>
 
-            <form id="web-preview-form" class="web-preview-form" novalidate>
-              <div class="upload-fields">
-                <div>
-                  <label for="web-material-url">公开网页 URL</label>
-                  <input
-                    id="web-material-url"
-                    name="url"
-                    type="url"
-                    maxlength="2048"
-                    placeholder="https://example.com/course/rag"
-                    autocomplete="url"
-                    required
-                  >
+            <div id="rag-panel" class="mode-panel" role="tabpanel" aria-labelledby="rag-tab">
+              <form id="ask-form" class="ask-form" novalidate>
+                <label for="question">向资料提问</label>
+                <textarea
+                  id="question"
+                  name="question"
+                  rows="5"
+                  maxlength="2000"
+                  placeholder="例如：请根据资料解释 Transformer 的核心思想。"
+                  required
+                ></textarea>
+                <div class="input-meta">
+                  <span id="char-count">0 / 2000</span>
+                  <span>Ctrl + Enter 提交</span>
                 </div>
-                <div>
-                  <label for="web-operation">操作</label>
-                  <select id="web-operation" name="operation">
-                    <option value="add">新增网页资料</option>
-                    <option value="replace">重新抓取并替换</option>
-                  </select>
+                <div class="submit-row">
+                  <button id="submit-button" type="submit">
+                    <span id="button-label">向资料提问</span>
+                    <span aria-hidden="true">→</span>
+                  </button>
+                  <p>提交会产生模型 API 费用。</p>
                 </div>
-              </div>
-              <div class="material-actions">
-                <button id="web-preview-button" class="secondary-button" type="submit">
-                  安全抓取并生成预览
-                </button>
-                <p>
-                  只支持公开、免登录的 HTTP(S) 单页；最多 5 次重定向、2 MiB HTML、
-                  30,000 字 Markdown，不使用 Cookie、代理、Stealth 或自定义脚本。
-                </p>
-              </div>
-            </form>
+              </form>
 
-            <div class="web-preview" id="web-preview" hidden>
-              <div class="web-preview-heading">
-                <strong id="web-preview-title"></strong>
-                <a id="web-preview-link" target="_blank" rel="noreferrer"></a>
+              <div class="error-panel" id="error-panel" role="alert" hidden>
+                <strong>这次请求没有完成</strong>
+                <p id="error-message"></p>
+                <p class="request-meta" id="error-request-meta" hidden></p>
               </div>
-              <p id="web-preview-meta"></p>
-              <pre id="web-preview-markdown" tabindex="0"></pre>
+
+              <section class="result-panel" id="result-panel" aria-labelledby="answer-title" aria-live="polite" hidden>
+                <header class="result-header">
+                  <div>
+                    <span>资料回答</span>
+                    <h3 id="answer-title">回答</h3>
+                  </div>
+                  <p class="request-meta" id="request-meta"></p>
+                </header>
+                <p class="answer" id="answer"></p>
+                <div class="citations-block">
+                  <h4>回答为什么可信</h4>
+                  <div class="citation-list" id="citation-list"></div>
+                  <ol class="legacy-sources" id="sources-list"></ol>
+                  <p class="empty-state" id="empty-sources" hidden>本次为证据不足拒答，因此没有返回 Citation。</p>
+                </div>
+              </section>
+            </div>
+
+            <div id="tutor-panel" class="mode-panel" role="tabpanel" aria-labelledby="tutor-tab" hidden>
+              <section class="tutor-setup" id="tutor-setup">
+                <span>建立真实学习 Session</span>
+                <h3>你现在想学习什么？</h3>
+                <p>知行会在本地创建学习身份和 Session，不保存密码或邮箱。</p>
+                <form id="tutor-session-form">
+                  <label for="tutor-topic">学习主题</label>
+                  <input id="tutor-topic" name="topic" maxlength="200" placeholder="例如：理解 Embedding" required>
+                  <button type="submit" id="tutor-session-button">开始这个主题</button>
+                </form>
+              </section>
+
+              <section class="tutor-chat" id="tutor-chat" hidden>
+                <div class="tutor-thread" id="tutor-thread" aria-live="polite">
+                  <div class="tutor-empty" id="tutor-empty">
+                    <strong>AI Tutor 已准备好</strong>
+                    <p>你可以要求它解释概念、根据资料回答、生成练习、总结内容或规划下一步。</p>
+                  </div>
+                </div>
+                <form id="tutor-form" class="tutor-form" novalidate>
+                  <label for="tutor-message">和 AI Tutor 学习</label>
+                  <textarea id="tutor-message" maxlength="2000" rows="4" placeholder="例如：我还是没理解 Embedding，请换一种方式解释。" required></textarea>
+                  <label class="cost-confirm" for="tutor-cost-confirm">
+                    <input id="tutor-cost-confirm" type="checkbox">
+                    <span>我确认本次 Tutor 请求会调用模型并产生 API 费用</span>
+                  </label>
+                  <button id="tutor-submit" type="submit">发送给 AI Tutor</button>
+                </form>
+              </section>
+              <div class="tutor-message" id="tutor-message-state" role="status" hidden></div>
             </div>
           </section>
 
-          <div class="stage-summary" id="stage-summary" hidden>
-            <div>
-              <strong id="stage-filename"></strong>
-              <p id="stage-details"></p>
-              <ul id="stage-file-results"></ul>
-              <p class="cost-warning" id="stage-cost"></p>
-            </div>
-            <button id="confirm-index-button" type="button">确认费用并创建后台任务</button>
-          </div>
+          <aside class="context-column" aria-labelledby="context-title">
+            <header class="workspace-column-heading">
+              <div>
+                <span>真实学习上下文</span>
+                <h3 id="context-title">继续上次的学习</h3>
+              </div>
+            </header>
 
-          <div class="material-message" id="material-message" role="status" hidden>
-            <p id="material-message-text"></p>
-            <p class="request-meta" id="material-request-meta" hidden></p>
-          </div>
+            <section class="context-card current-topic-card">
+              <span>当前主题</span>
+              <strong id="current-topic">还没有学习主题</strong>
+              <button id="new-session-button" type="button" hidden>开始新主题</button>
+            </section>
 
-          <div class="material-library">
-            <h3>当前资料</h3>
-            <ul id="material-list"></ul>
-            <p class="empty-materials" id="empty-materials" hidden>当前没有资料。</p>
-          </div>
-        </section>
+            <section class="context-card">
+              <span>Learning Action</span>
+              <strong id="learning-action">等待第一次 Tutor 互动</strong>
+              <p id="learning-action-note">Tutor 返回的真实学习行动会显示在这里。</p>
+            </section>
 
-        <form id="ask-form" class="ask-form" novalidate>
-          <label for="question">问题</label>
-          <textarea
-            id="question"
-            name="question"
-            rows="6"
-            maxlength="2000"
-            placeholder="例如：柯西分布有哪些主要特点？"
-            required
-          ></textarea>
-          <div class="input-meta">
-            <span id="char-count">0 / 2000</span>
-            <span>Ctrl + Enter 提交</span>
-          </div>
-
-          <div class="submit-row">
-            <button id="submit-button" type="submit">
-              <span id="button-label">向资料提问</span>
-              <span aria-hidden="true">→</span>
-            </button>
-            <p>
-              提交会产生 API 费用；每分钟最多 5 次，当前服务进程最多 50 次。
-            </p>
-          </div>
-        </form>
-
-        <div class="error-panel" id="error-panel" role="alert" hidden>
-          <strong>这次请求没有完成</strong>
-          <p id="error-message"></p>
-          <p class="request-meta" id="error-request-meta" hidden></p>
+            <section class="recent-learning">
+              <div class="recent-heading">
+                <h4>最近学习记录</h4>
+                <button id="refresh-history-button" type="button">刷新</button>
+              </div>
+              <ol id="learning-history-list"></ol>
+              <p class="empty-state" id="empty-learning-history">完成一次 Tutor 互动后，真实记录会出现在这里。</p>
+            </section>
+          </aside>
         </div>
+      </section>
 
-        <section
-          class="result-panel"
-          id="result-panel"
-          aria-labelledby="answer-title"
-          aria-live="polite"
-          hidden
-        >
-          <header class="result-header">
-            <div>
-              <p class="section-kicker">GROUNDED ANSWER</p>
-              <h2 id="answer-title">回答</h2>
-            </div>
-            <p class="request-meta" id="request-meta"></p>
-          </header>
-
-          <p class="answer" id="answer"></p>
-
-          <div class="sources-block">
-            <h3>可核对来源</h3>
-            <ol id="sources-list"></ol>
-            <p class="empty-sources" id="empty-sources" hidden>
-              本次为无证据拒答，因此没有返回来源。
-            </p>
-          </div>
-        </section>
+      <section class="final-cta section-shell" aria-labelledby="final-title" data-reveal>
+        <p>知，是理解。行，是继续。</p>
+        <h2 id="final-title">带着证据学习，带着行动离开。</h2>
+        <a class="primary-cta" href="#learn">开始学习</a>
       </section>
     </main>
+
+    <footer class="site-footer section-shell">
+      <a class="brand footer-brand" href="#top">
+        <span class="brand-mark" aria-hidden="true">知</span>
+        <span><strong>知行</strong><small>Zhixing AI Learning Companion</small></span>
+      </a>
+      <p>基于个人资料工作的 AI 学习伙伴。</p>
+      <a href="/docs" target="_blank" rel="noreferrer">查看 API 文档</a>
+    </footer>
 
     <script src="/static/app.js" defer></script>
   </body>
