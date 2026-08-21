@@ -1,13 +1,21 @@
 import json
+import tempfile
 import unittest
 from dataclasses import asdict
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock
+from uuid import uuid4
 
 from langchain_core.documents import Document
 from langgraph.checkpoint.memory import InMemorySaver
 
 from app.evidence import Citation, build_evidence_context
 from app.langchain_rag import NO_EVIDENCE_ANSWER, RAGAnswer
+from app.learning_data import (
+    ConversationMessageRecord,
+    LearningDataStore,
+    LearningSessionRecord,
+)
 from app.rag_service import RAGService
 from app.tutor_workflow import (
     KNOWLEDGE_TOOL_NAME,
@@ -29,6 +37,57 @@ from app.tutor_workflow import (
 
 
 SESSION_ID = "11111111-1111-4111-8111-111111111111"
+USER_ID = "22222222-2222-4222-8222-222222222222"
+
+
+class FakeLearningStore:
+    def __init__(self) -> None:
+        self.topic = "本次学习内容"
+        self.messages: list[ConversationMessageRecord] = []
+        self.exchanges: list[dict[str, object]] = []
+
+    async def get_session(
+        self,
+        user_id: str,
+        session_id: str,
+    ) -> LearningSessionRecord:
+        return LearningSessionRecord(
+            session_id=session_id,
+            user_id=user_id,
+            topic=self.topic,
+            created_at="2026-08-21T00:00:00.000Z",
+            updated_at="2026-08-21T00:00:00.000Z",
+        )
+
+    async def list_messages(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        limit: int,
+    ) -> tuple[ConversationMessageRecord, ...]:
+        del user_id, session_id
+        return tuple(self.messages[-limit:])
+
+    async def record_tutor_exchange(self, **values: object) -> None:
+        self.exchanges.append(values)
+        self.topic = str(values["topic"])
+        intent = str(values["intent"])
+        session_id = str(values["session_id"])
+        for role, content_key in (
+            ("user", "user_content"),
+            ("tutor", "tutor_content"),
+        ):
+            self.messages.append(
+                ConversationMessageRecord(
+                    message_id=str(uuid4()),
+                    session_id=session_id,
+                    role=role,
+                    content=str(values[content_key]),
+                    intent=intent,
+                    created_at="2026-08-21T00:00:00.000Z",
+                )
+            )
 
 
 def grounded_knowledge() -> KnowledgeToolResult:
@@ -96,7 +155,11 @@ def make_service(
     tools = TutorTools(knowledge=knowledge, quiz=quiz, summary=summary)
     checkpointer = InMemorySaver()
     graph = build_tutor_graph(checkpointer)
-    service = TutorWorkflowService(graph=graph, tools=tools)
+    service = TutorWorkflowService(
+        graph=graph,
+        tools=tools,
+        learning_store=FakeLearningStore(),
+    )
     return service, knowledge, quiz, summary, graph
 
 
@@ -155,7 +218,7 @@ class TutorWorkflowEvaluationTests(unittest.IsolatedAsyncioTestCase):
     async def test_explanation_routes_through_rag_and_keeps_citations(self) -> None:
         service, knowledge, quiz, summary, _ = make_service()
 
-        result = await service.chat(SESSION_ID, "什么是 Embedding？")
+        result = await service.chat(USER_ID, SESSION_ID, "什么是 Embedding？")
 
         self.assertEqual(result.intent, "explanation")
         self.assertEqual(result.learning_action, "explain_concept")
@@ -170,7 +233,11 @@ class TutorWorkflowEvaluationTests(unittest.IsolatedAsyncioTestCase):
     async def test_quiz_calls_retrieval_then_quiz_tool_with_expected_arguments(self) -> None:
         service, knowledge, quiz, summary, _ = make_service()
 
-        result = await service.chat(SESSION_ID, "帮我出题练习 Embedding")
+        result = await service.chat(
+            USER_ID,
+            SESSION_ID,
+            "帮我出题练习 Embedding",
+        )
 
         self.assertEqual(result.intent, "quiz")
         self.assertEqual(
@@ -188,9 +255,13 @@ class TutorWorkflowEvaluationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_session_summary_skips_rag_and_uses_prior_turns(self) -> None:
         service, knowledge, quiz, summary, graph = make_service()
-        await service.chat(SESSION_ID, "Embedding 有什么作用？")
+        await service.chat(USER_ID, SESSION_ID, "Embedding 有什么作用？")
 
-        result = await service.chat(SESSION_ID, "总结刚才的学习内容")
+        result = await service.chat(
+            USER_ID,
+            SESSION_ID,
+            "总结刚才的学习内容",
+        )
 
         self.assertEqual(result.intent, "summary")
         self.assertEqual(result.tools_used, (SUMMARY_TOOL_NAME,))
@@ -210,9 +281,9 @@ class TutorWorkflowEvaluationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_follow_up_quiz_reuses_previous_session_topic(self) -> None:
         service, knowledge, quiz, _, _ = make_service()
-        await service.chat(SESSION_ID, "什么是 Embedding？")
+        await service.chat(USER_ID, SESSION_ID, "什么是 Embedding？")
 
-        result = await service.chat(SESSION_ID, "继续出一道题")
+        result = await service.chat(USER_ID, SESSION_ID, "继续出一道题")
 
         self.assertEqual(result.intent, "quiz")
         self.assertEqual(result.topic, "Embedding")
@@ -225,7 +296,7 @@ class TutorWorkflowEvaluationTests(unittest.IsolatedAsyncioTestCase):
     async def test_topic_summary_without_history_retrieves_before_summary(self) -> None:
         service, knowledge, quiz, summary, _ = make_service()
 
-        result = await service.chat(SESSION_ID, "总结 Transformer")
+        result = await service.chat(USER_ID, SESSION_ID, "总结 Transformer")
 
         self.assertEqual(
             result.tools_used,
@@ -238,7 +309,11 @@ class TutorWorkflowEvaluationTests(unittest.IsolatedAsyncioTestCase):
     async def test_study_plan_is_deterministic_after_grounded_retrieval(self) -> None:
         service, knowledge, quiz, summary, _ = make_service()
 
-        result = await service.chat(SESSION_ID, "制定 Embedding 学习计划")
+        result = await service.chat(
+            USER_ID,
+            SESSION_ID,
+            "制定 Embedding 学习计划",
+        )
 
         self.assertEqual(result.intent, "study_plan")
         self.assertEqual(result.learning_action, "create_study_plan")
@@ -257,7 +332,11 @@ class TutorWorkflowEvaluationTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        result = await service.chat(SESSION_ID, "帮我出题练习未知主题")
+        result = await service.chat(
+            USER_ID,
+            SESSION_ID,
+            "帮我出题练习未知主题",
+        )
 
         self.assertEqual(result.learning_action, "insufficient_evidence")
         self.assertIsNone(result.quiz)
@@ -266,13 +345,67 @@ class TutorWorkflowEvaluationTests(unittest.IsolatedAsyncioTestCase):
         summary.invoke.assert_not_awaited()
         json.dumps(asdict(result), ensure_ascii=False)
 
+    async def test_tutor_session_and_history_survive_database_reopen(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "learning.sqlite3"
+            first_store = await LearningDataStore.open(database_path)
+            user = await first_store.create_user()
+            session = await first_store.create_session(user.user_id, "Embedding")
+            template, knowledge, _, summary, _ = make_service()
+            first_graph = build_tutor_graph(first_store.checkpointer)
+            first = TutorWorkflowService(
+                graph=first_graph,
+                tools=template._tools,
+                learning_store=first_store,
+            )
+            await first.chat(
+                user.user_id,
+                session.session_id,
+                "什么是 Embedding？",
+            )
+            await first_store.close()
+
+            reopened_store = await LearningDataStore.open(database_path)
+            try:
+                reopened_graph = build_tutor_graph(reopened_store.checkpointer)
+                reopened = TutorWorkflowService(
+                    graph=reopened_graph,
+                    tools=template._tools,
+                    learning_store=reopened_store,
+                )
+                result = await reopened.chat(
+                    user.user_id,
+                    session.session_id,
+                    "总结刚才的学习内容",
+                )
+                messages = await reopened_store.list_messages(
+                    user.user_id,
+                    session.session_id,
+                )
+                records = await reopened_store.list_learning_records(
+                    user.user_id,
+                    session_id=session.session_id,
+                )
+                snapshot = await reopened_graph.aget_state(
+                    {"configurable": {"thread_id": session.session_id}}
+                )
+            finally:
+                await reopened_store.close()
+
+        self.assertEqual(result.intent, "summary")
+        self.assertEqual(len(messages), 4)
+        self.assertEqual(len(records), 2)
+        self.assertEqual(snapshot.values["topic"], "Embedding")
+        self.assertEqual(knowledge.invoke.await_count, 1)
+        summary.invoke.assert_awaited_once()
+
     async def test_tool_failure_is_wrapped_without_internal_detail(self) -> None:
         service, _, _, _, _ = make_service(
             RuntimeError("BAILIAN_API_KEY=secret-value")
         )
 
         with self.assertRaisesRegex(TutorExecutionError, "知识检索工具") as raised:
-            await service.chat(SESSION_ID, "Embedding 是什么？")
+            await service.chat(USER_ID, SESSION_ID, "Embedding 是什么？")
 
         self.assertNotIn("secret-value", str(raised.exception))
 

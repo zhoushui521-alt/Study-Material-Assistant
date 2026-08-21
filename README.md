@@ -31,7 +31,8 @@ Agent 通过三个固定工具动态选择资料问答、资料列表或公开�
 进度和复盘；阶段 6 Agent 只作为受控的资料证据节点，不拥有整个流程控制权。
 V2 Stage 4 在不改动上述旧接口的前提下新增单 Tutor workflow：确定性识别问答、解释、
 练习、总结和学习规划，通过三个受控 Tool 复用现有 RAG、生成结构化练习或总结，并只在
-当前进程的 Session 中保留最近 20 条对话。
+当前推理中保留有限短期状态。V2 Stage 5.1 进一步增加本地用户身份、学习 Session、
+完整 Tutor 对话与学习行为记录，并用 SQLite checkpoint 支持服务重启后继续学习。
 
 上传、网页预览、替换、删除、回滚、日志轮转、报告对比和阶段 3 保护已经通过 Fake/Mock 自动
 测试。用户随后在本地页面完成了一次真实 PDF 上传、费用确认、增量索引和问答：索引
@@ -356,9 +357,16 @@ python -m uvicorn app.api:app --host 127.0.0.1 --port 8000 --no-access-log
   `"allow_web_preview": true` 只授权本次请求预览用户明确提供的公开 URL；返回
   `answer`、`sources` 和 `tools_used`；
 - `POST http://127.0.0.1:8000/api/tutor/chat`：请求体为
-  `{"message": "帮我出题练习 Embedding", "session_id": "<UUID>",
-  "confirm_api_cost": true}`；返回 Tutor 意图、学习动作、Evidence/Citation、可选练习或
-  总结，并在同一进程内按 `session_id` 保留有限 Session State；
+  `{"message": "帮我出题练习 Embedding", "user_id": "<UUID>",
+  "session_id": "<UUID>", "confirm_api_cost": true}`；`user_id` 和 `session_id`
+  必须先通过下述用户与 Session API 创建；返回 Tutor 意图、学习动作、
+  Evidence/Citation、可选练习或总结，并持久化成功的对话与学习行为；
+- `POST http://127.0.0.1:8000/api/users`：创建只包含服务端 UUID 和 UTC 创建时间的
+  本地用户身份，不接收密码、邮箱或权限字段；`GET /api/users/{user_id}` 查询用户；
+- `POST /api/users/{user_id}/sessions`：请求体为 `{"topic": "Embedding"}`，创建学习
+  Session；`GET /api/users/{user_id}/sessions` 最多返回最近 100 个 Session；
+- `GET /api/users/{user_id}/history`：最多返回最近 100 条 Tutor 消息和 100 条学习记录；
+  可用 `session_id=<UUID>` 查询参数限定到属于该用户的 Session；
 - `POST http://127.0.0.1:8000/api/study-workflows`：请求体为
   `{"goal": "理解 RAG 的证据约束", "confirm_api_cost": true}`；调用一次受限 Agent
   整理资料证据、生成三步计划，并在返回前暂停等待人工确认；
@@ -425,12 +433,35 @@ Agent 执行最多等待 90 秒；已经进入同步 RAG 的外部调用仍受�
 生效。Quiz Generator Tool 和 Learning Summary Tool 使用当前 ChatModel 的结构化输出，
 资料不足时不会继续生成练习或基于模型知识补全。
 
-Tutor 的 `conversation` 只保存在 `InMemorySaver`，最多保留最近 20 条、合计 12000
-字符，并让“继续出一道题”等续问继承上一轮 topic；进程重启后状态消失，不等于长期
-Memory。旧 `/api/ask`、`/api/agent` 和 `/api/study-workflows` 继续可用。QA、解释和
+Stage 4 最初使用 `InMemorySaver`，最多保留最近 20 条、合计 12000 字符，并让“继续出
+一道题”等续问继承上一轮 topic。该阶段当时不支持进程重启恢复；这一限制由后续
+Stage 5.1 的持久化数据层替代。旧 `/api/ask`、`/api/agent` 和
+`/api/study-workflows` 继续可用。QA、解释和
 学习规划最多执行现有 RAG 的 Query Embedding 与 Chat 调用；Quiz 和
 新主题 Summary 会在此基础上增加一次结构化 Chat 调用；Session Summary 只执行一次
 结构化 Chat 调用。完整边界和验证证据见 `docs/stage4-completion-report.md`。
+
+## V2 Stage 5.1：User System & Persistent Learning Data
+
+`app/learning_data.py` 使用 SQLite、`aiosqlite` 和显式 SQL 管理 `users`、
+`learning_sessions`、`conversation_messages`、`learning_records` 与
+`schema_migrations`。数据库默认位于 `data/learning/learning.sqlite3`，并被
+`.gitignore` 排除。首次打开会在事务中应用版本 1 迁移；高于程序支持版本的数据库会
+拒绝打开，不会猜测降级。
+
+Tutor 不把长期学习历史拼进 Prompt，也不把 LangGraph State 当作长期业务数据库：
+每次调用先按 `user_id + session_id` 校验归属，从业务表加载最近有限对话作为当前推理
+输入；LangGraph 使用同一数据库文件中的 `AsyncSqliteSaver` 保存线程级短期 checkpoint；
+成功后再以一个业务事务写入 user/tutor 两条消息、学习动作和更新后的 Session topic。
+因此服务关闭重开后仍能继续同一 Session，而完整历史和学习行为有独立、可查询的数据
+模型。
+
+本阶段选择 SQLite 是因为当前仍是本地单实例原型，并且仓库已经锁定
+`aiosqlite` 与 `langgraph-checkpoint-sqlite`；没有真实并发或部署证据支持立即引入
+PostgreSQL、连接池和新迁移框架。当前只建立基于 UUID 和外键查询的用户数据分区，
+没有认证授权；知道其他用户 UUID 的调用者仍可能访问其数据，因此不能作为公网多用户
+安全边界。数据库也未加密，不应保存密码、令牌或其他敏感凭据。完整设计与验证证据见
+`docs/stage5-1-completion-report.md`。
 
 ## 阶段 7：LangGraph 学习规划工作流
 
@@ -616,6 +647,7 @@ node --check web\static\app.js
 | **当前已完成 13：阶段 5 Crawl4AI 网页资料导入** | 公网 URL/DNS/每跳重定向校验；固定到已验证 IP 的受控单页抓取；Crawl4AI 本地 Markdown 预览；来源元数据；复用现有暂存与确认索引链路。 | Fake/Mock 覆盖 SSRF、重定向、超限、错误映射和隐私日志；本地原始 HTML 已实际通过 Crawl4AI 清理转换，API/UI 契约已自动验证；用户已在本地页面完成 `qiuzhi2046.com` 的真实公开网页 Markdown 预览。 | 真实网页付费入库与问答仍未验收；不支持 JavaScript 渲染、登录态或批量爬取。部分代理/Fake-IP DNS 环境会把域名映射到保留测试网段并被 SSRF 保护正确拒绝。 |
 | **当前已完成 14：阶段 6 LangChain Agent 工具编排** | 使用 `create_agent` 编排 `answer_from_materials`、`list_available_materials` 和 `preview_web_material` 三个受限工具；提供 `/api/agent`、单次费用确认、网页预览独立授权、模型/工具/总时限和单进程预算。 | Fake/Mock 验证工具选择、LCEL 回答与来源逐字保留、网页预览不入库、未授权拒绝、工具异常脱敏、重复付费工具限制、超时和 API 错误契约。 | 尚未调用真实工具调用模型，不能把自动测试当作真实 Agent 效果验收；没有索引、删除、任意文件或任意网络工具，也没有对话记忆和自定义 LangGraph 状态流。 |
 | **当前已完成 15：阶段 7 LangGraph 学习规划工作流** | 用显式 `StateGraph` 管理目标、受控 Agent 证据节点、三步计划、`interrupt` 确认、批准/拒绝分支、进度、复盘、一次手动重试和 SQLite 检查点删除。 | Fake/Mock 覆盖完整状态流、路由原因、费用确认、拒绝后停止、进度上限和隐私日志；真实 SQLite 文件关闭并重开后可以读取并恢复等待确认的线程。 | 尚未调用真实模型验收工作流效果；检查点是未加密的本地单实例数据，没有鉴权、跨实例锁、后台清理或任意对话长期记忆。 |
+| **当前已完成 16：V2 Stage 5.1 用户与持久化学习数据** | 服务端 UUID 用户、学习 Session、Tutor 消息、学习行为、版本迁移和 SQLite LangGraph checkpoint。 | 临时真实 SQLite 覆盖创建、归属隔离、历史查询和关闭重开后的 Tutor 续学；全量 Fake/Mock 自动化回归通过。 | 没有登录、OAuth、RBAC、加密、跨实例并发或生产备份；UUID 分区不等于公网鉴权。 |
 
 ### 下一阶段与后续阶段
 

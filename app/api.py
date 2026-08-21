@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
 from time import perf_counter
-from typing import Annotated, AsyncIterator, Literal
+from typing import Annotated, Any, AsyncIterator, Literal
 from uuid import UUID, uuid4
 
 from fastapi import (
@@ -36,6 +36,16 @@ from app.agent_service import (
     create_agent_service,
 )
 from app.langchain_rag import LangChainRAGError, source_label
+from app.learning_data import (
+    MAX_HISTORY_ITEMS,
+    ConversationMessageRecord,
+    LearningActivityRecord,
+    LearningDataConflictError,
+    LearningDataNotFoundError,
+    LearningDataStore,
+    LearningSessionRecord,
+    UserRecord,
+)
 from app.material_ingestion import (
     BatchMaterialSyncResult,
     BatchStageResult,
@@ -115,6 +125,8 @@ SECURITY_RESPONSE_HEADERS = {
 }
 _service_lock = Lock()
 _workflow_service_lock = asyncio.Lock()
+_learning_data_lock = asyncio.Lock()
+_tutor_service_lock = asyncio.Lock()
 request_logger = logging.getLogger("uvicorn.error")
 
 
@@ -181,6 +193,7 @@ class TutorChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     message: str = Field(min_length=1, max_length=TUTOR_MAX_MESSAGE_LENGTH)
+    user_id: UUID
     session_id: UUID
     confirm_api_cost: Literal[True]
 
@@ -223,6 +236,61 @@ class TutorChatResponse(BaseModel):
     summary: LearningSummaryDraft | None
     tools_used: list[str]
     route_trace: list[str]
+
+
+class UserResponse(BaseModel):
+    user_id: UUID
+    created_at: datetime
+
+
+class LearningSessionCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    topic: str = Field(min_length=1, max_length=200)
+
+    @field_validator("topic")
+    @classmethod
+    def strip_topic(cls, value: str) -> str:
+        topic = value.strip()
+        if not topic:
+            raise ValueError("学习主题不能为空。")
+        return topic
+
+
+class LearningSessionResponse(BaseModel):
+    session_id: UUID
+    user_id: UUID
+    topic: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class LearningSessionListResponse(BaseModel):
+    sessions: list[LearningSessionResponse]
+
+
+class ConversationMessageResponse(BaseModel):
+    message_id: UUID
+    session_id: UUID
+    role: Literal["user", "tutor"]
+    content: str
+    intent: TutorIntent | None
+    created_at: datetime
+
+
+class LearningActivityResponse(BaseModel):
+    record_id: UUID
+    user_id: UUID
+    session_id: UUID
+    topic: str
+    activity_type: str
+    created_at: datetime
+    metadata: dict[str, Any]
+
+
+class LearningHistoryResponse(BaseModel):
+    messages: list[ConversationMessageResponse]
+    learning_records: list[LearningActivityResponse]
 
 
 class StudyWorkflowStartRequest(BaseModel):
@@ -419,7 +487,7 @@ class WebMaterialPreviewResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(api: FastAPI) -> AsyncIterator[None]:
-    """在进程退出时释放按需创建的 Chroma 客户端。"""
+    """在进程退出时释放按需创建的数据库与 Chroma 客户端。"""
     try:
         manager = getattr(api.state, "material_manager", None)
         if manager is not None:
@@ -457,6 +525,19 @@ async def lifespan(api: FastAPI) -> AsyncIterator[None]:
                     )
                 )
         api.state.study_workflow_service = None
+        learning_store = getattr(api.state, "learning_data_store", None)
+        if learning_store is not None:
+            try:
+                await learning_store.close()
+            except Exception:
+                request_logger.error(
+                    json.dumps(
+                        {"event": "learning_data_store_cleanup_failed"},
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                )
+        api.state.learning_data_store = None
         service = getattr(api.state, "rag_service", None)
         try:
             if service is not None:
@@ -476,6 +557,7 @@ app.state.rag_service = None
 app.state.agent_service = None
 app.state.tutor_service = None
 app.state.study_workflow_service = None
+app.state.learning_data_store = None
 app.state.material_manager = MaterialManager()
 app.state.request_history_writer = RequestHistoryWriter()
 app.state.operation_guard = OperationGuard()
@@ -661,28 +743,52 @@ def get_agent_service_provider(request: Request) -> Callable[[], AgentService]:
     return lambda: get_agent_service(request)
 
 
-def get_tutor_service(request: Request) -> TutorWorkflowService:
-    """按需创建单 Tutor workflow，并与当前 RAG 服务共享同一索引和 ChatModel。"""
+async def get_learning_data_store(request: Request) -> LearningDataStore:
+    """按需打开用户学习数据库，不初始化 RAG 或调用模型。"""
+    store = getattr(request.app.state, "learning_data_store", None)
+    if store is not None:
+        return store
+    async with _learning_data_lock:
+        store = getattr(request.app.state, "learning_data_store", None)
+        if store is None:
+            try:
+                store = await LearningDataStore.open()
+            except Exception as error:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="学习数据服务暂不可用。",
+                ) from error
+            request.app.state.learning_data_store = store
+        return store
+
+
+async def get_tutor_service(request: Request) -> TutorWorkflowService:
+    """按需创建持久化 Tutor，并复用当前 RAG 与学习数据库。"""
     service = getattr(request.app.state, "tutor_service", None)
     if service is not None:
         return service
 
+    learning_store = await get_learning_data_store(request)
     while True:
-        rag_service = get_rag_service(request)
-        with _service_lock:
-            service = getattr(request.app.state, "tutor_service", None)
-            if service is not None:
+        rag_service = await asyncio.to_thread(get_rag_service, request)
+        async with _tutor_service_lock:
+            with _service_lock:
+                service = getattr(request.app.state, "tutor_service", None)
+                if service is not None:
+                    return service
+                if getattr(request.app.state, "rag_service", None) is not rag_service:
+                    continue
+                service = create_tutor_workflow_service(
+                    rag_service,
+                    learning_store,
+                )
+                request.app.state.tutor_service = service
                 return service
-            if getattr(request.app.state, "rag_service", None) is not rag_service:
-                continue
-            service = create_tutor_workflow_service(rag_service)
-            request.app.state.tutor_service = service
-            return service
 
 
 def get_tutor_service_provider(
     request: Request,
-) -> Callable[[], TutorWorkflowService]:
+) -> Callable[[], Awaitable[TutorWorkflowService]]:
     """返回惰性 Tutor 获取器，非法或未确认费用的请求不会初始化模型。"""
     return lambda: get_tutor_service(request)
 
@@ -778,6 +884,24 @@ def raise_material_http_error(error: Exception) -> None:
     raise error
 
 
+def raise_learning_data_http_error(error: Exception) -> None:
+    """将学习数据异常映射为不暴露归属关系和数据库细节的响应。"""
+    if isinstance(error, LearningDataNotFoundError):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="用户或学习会话不存在。",
+        ) from error
+    if isinstance(error, LearningDataConflictError):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="学习数据状态冲突。",
+        ) from error
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="学习数据服务暂不可用。",
+    ) from error
+
+
 def raise_operation_http_error(error: OperationProtectionError) -> None:
     """把保护拒绝映射为可重试且不泄露内部状态的 429。"""
     headers = None
@@ -830,6 +954,49 @@ def raise_study_workflow_http_error(error: Exception) -> None:
     raise error
 
 
+def user_response(record: UserRecord) -> UserResponse:
+    return UserResponse(user_id=record.user_id, created_at=record.created_at)
+
+
+def learning_session_response(
+    record: LearningSessionRecord,
+) -> LearningSessionResponse:
+    return LearningSessionResponse(
+        session_id=record.session_id,
+        user_id=record.user_id,
+        topic=record.topic,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+
+def conversation_message_response(
+    record: ConversationMessageRecord,
+) -> ConversationMessageResponse:
+    return ConversationMessageResponse(
+        message_id=record.message_id,
+        session_id=record.session_id,
+        role=record.role,
+        content=record.content,
+        intent=record.intent,
+        created_at=record.created_at,
+    )
+
+
+def learning_activity_response(
+    record: LearningActivityRecord,
+) -> LearningActivityResponse:
+    return LearningActivityResponse(
+        record_id=record.record_id,
+        user_id=record.user_id,
+        session_id=record.session_id,
+        topic=record.topic,
+        activity_type=record.activity_type,
+        created_at=record.created_at,
+        metadata=record.metadata,
+    )
+
+
 def study_workflow_response(result: StudyWorkflowResult) -> StudyWorkflowResponse:
     return StudyWorkflowResponse(
         workflow_id=result.workflow_id,
@@ -860,6 +1027,115 @@ def web_page() -> FileResponse:
     return FileResponse(
         WEB_DIR / "index.html",
         headers=SECURITY_RESPONSE_HEADERS,
+    )
+
+
+@app.post(
+    "/api/users",
+    response_model=UserResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_user(
+    store: Annotated[LearningDataStore, Depends(get_learning_data_store)],
+) -> UserResponse:
+    """创建不含密码、邮箱或权限信息的本地用户身份。"""
+    try:
+        return user_response(await store.create_user())
+    except Exception as error:
+        raise_learning_data_http_error(error)
+        raise
+
+
+@app.get("/api/users/{user_id}", response_model=UserResponse)
+async def get_user(
+    user_id: UUID,
+    store: Annotated[LearningDataStore, Depends(get_learning_data_store)],
+) -> UserResponse:
+    try:
+        return user_response(await store.get_user(str(user_id)))
+    except Exception as error:
+        raise_learning_data_http_error(error)
+        raise
+
+
+@app.post(
+    "/api/users/{user_id}/sessions",
+    response_model=LearningSessionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_learning_session(
+    user_id: UUID,
+    payload: LearningSessionCreateRequest,
+    store: Annotated[LearningDataStore, Depends(get_learning_data_store)],
+) -> LearningSessionResponse:
+    try:
+        record = await store.create_session(str(user_id), payload.topic)
+        return learning_session_response(record)
+    except Exception as error:
+        raise_learning_data_http_error(error)
+        raise
+
+
+@app.get(
+    "/api/users/{user_id}/sessions",
+    response_model=LearningSessionListResponse,
+)
+async def list_learning_sessions(
+    user_id: UUID,
+    store: Annotated[LearningDataStore, Depends(get_learning_data_store)],
+) -> LearningSessionListResponse:
+    try:
+        records = await store.list_sessions(
+            str(user_id),
+            limit=MAX_HISTORY_ITEMS,
+        )
+    except Exception as error:
+        raise_learning_data_http_error(error)
+        raise
+    return LearningSessionListResponse(
+        sessions=[learning_session_response(record) for record in records]
+    )
+
+
+@app.get(
+    "/api/users/{user_id}/history",
+    response_model=LearningHistoryResponse,
+)
+async def get_learning_history(
+    user_id: UUID,
+    store: Annotated[LearningDataStore, Depends(get_learning_data_store)],
+    session_id: UUID | None = None,
+) -> LearningHistoryResponse:
+    """按用户边界读取有限对话和学习行为；可进一步限定 Session。"""
+    normalized_user_id = str(user_id)
+    try:
+        if session_id is None:
+            messages = await store.list_user_messages(
+                normalized_user_id,
+                limit=MAX_HISTORY_ITEMS,
+            )
+            records = await store.list_learning_records(
+                normalized_user_id,
+                limit=MAX_HISTORY_ITEMS,
+            )
+        else:
+            normalized_session_id = str(session_id)
+            messages = await store.list_messages(
+                normalized_user_id,
+                normalized_session_id,
+                limit=MAX_HISTORY_ITEMS,
+            )
+            records = await store.list_learning_records(
+                normalized_user_id,
+                session_id=normalized_session_id,
+                limit=MAX_HISTORY_ITEMS,
+            )
+    except Exception as error:
+        raise_learning_data_http_error(error)
+        raise
+    return LearningHistoryResponse(
+        messages=[conversation_message_response(record) for record in messages],
+        learning_records=[learning_activity_response(record) for record in records],
     )
 
 
@@ -1256,16 +1532,18 @@ async def tutor_chat(
     request: Request,
     guard: Annotated[OperationGuard, Depends(get_operation_guard)],
     service_provider: Annotated[
-        Callable[[], TutorWorkflowService],
+        Callable[[], Awaitable[TutorWorkflowService]],
         Depends(get_tutor_service_provider),
     ],
 ) -> TutorChatResponse:
     """在显式费用确认下执行单 Tutor 的有状态学习工作流。"""
     try:
         with guard.acquire("agent", units=1):
-            service = await asyncio.to_thread(service_provider)
+            service = await service_provider()
             result: TutorResult = await service.chat(
-                str(payload.session_id), payload.message
+                str(payload.user_id),
+                str(payload.session_id),
+                payload.message,
             )
     except OperationProtectionError as error:
         request.state.error_category = "tutor_protected"
@@ -1277,6 +1555,10 @@ async def tutor_chat(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail="Tutor 处理超时。",
         ) from error
+    except LearningDataNotFoundError as error:
+        request.state.error_category = "tutor_not_found"
+        raise_learning_data_http_error(error)
+        raise
     except TutorExecutionError as error:
         request.state.error_category = "tutor_processing"
         raise HTTPException(

@@ -9,13 +9,13 @@ from typing import Any, Literal, TypedDict
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate
-from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.evidence import Citation, Evidence, build_evidence_context
 from app.langchain_rag import NO_EVIDENCE_ANSWER, RAGAnswer, source_label
+from app.learning_data import LearningDataStore
 from app.rag_service import RAGService
 
 
@@ -58,6 +58,7 @@ class TutorConversationTurn(TypedDict):
 class TutorState(TypedDict, total=False):
     """只包含可 JSON 序列化的数据，服务对象通过 Runtime context 注入。"""
 
+    user_id: str
     session_id: str
     user_input: str
     intent: TutorIntent
@@ -347,8 +348,13 @@ def classify_intent_node(state: TutorState) -> dict[str, Any]:
     intent = classify_tutor_intent(state["user_input"])
     topic = extract_topic(state["user_input"], intent)
     previous_topic = state.get("topic", "").strip()
+    wants_session_summary = intent == "summary" and any(
+        keyword in state["user_input"] for keyword in SESSION_SUMMARY_KEYWORDS
+    )
     if previous_topic and (
-        topic == "本次学习内容" or topic.startswith(("继续", "再", "来一道"))
+        wants_session_summary
+        or topic == "本次学习内容"
+        or topic.startswith(("继续", "再", "来一道"))
     ):
         topic = previous_topic
     return {
@@ -605,12 +611,14 @@ class TutorWorkflowService:
         *,
         graph: Any,
         tools: TutorTools,
+        learning_store: LearningDataStore,
         timeout_seconds: float = TUTOR_TIMEOUT_SECONDS,
     ) -> None:
         if timeout_seconds <= 0:
             raise ValueError("Tutor 超时时间必须大于 0。")
         self._graph = graph
         self._tools = tools
+        self._learning_store = learning_store
         self._timeout_seconds = timeout_seconds
 
     @staticmethod
@@ -620,13 +628,21 @@ class TutorWorkflowService:
             "recursion_limit": TUTOR_RECURSION_LIMIT,
         }
 
-    async def chat(self, session_id: str, message: str) -> TutorResult:
+    async def chat(
+        self,
+        user_id: str,
+        session_id: str,
+        message: str,
+    ) -> TutorResult:
+        normalized_user_id = user_id.strip()
         normalized_session_id = session_id.strip()
         if (
-            not normalized_session_id
+            not normalized_user_id
+            or len(normalized_user_id) > TUTOR_MAX_SESSION_ID_LENGTH
+            or not normalized_session_id
             or len(normalized_session_id) > TUTOR_MAX_SESSION_ID_LENGTH
         ):
-            raise ValueError("Tutor Session ID 无效。")
+            raise ValueError("Tutor 用户或 Session ID 无效。")
         prompt = message.strip()
         if not prompt:
             raise ValueError("Tutor 消息不能为空。")
@@ -634,9 +650,40 @@ class TutorWorkflowService:
             raise ValueError(
                 f"Tutor 消息不能超过 {TUTOR_MAX_MESSAGE_LENGTH} 个字符。"
             )
+        session = await self._learning_store.get_session(
+            normalized_user_id,
+            normalized_session_id,
+        )
+        stored_messages = await self._learning_store.list_messages(
+            normalized_user_id,
+            normalized_session_id,
+            limit=TUTOR_MAX_HISTORY_TURNS,
+        )
+        valid_intents = {
+            "knowledge_qa",
+            "explanation",
+            "quiz",
+            "summary",
+            "study_plan",
+        }
+        conversation: list[TutorConversationTurn] = [
+            {
+                "role": "user" if item.role == "user" else "tutor",
+                "content": item.content,
+                "intent": (
+                    item.intent
+                    if item.intent in valid_intents
+                    else "knowledge_qa"
+                ),
+            }
+            for item in stored_messages
+        ]
         inputs: TutorState = {
+            "user_id": normalized_user_id,
             "session_id": normalized_session_id,
             "user_input": prompt,
+            "topic": session.topic,
+            "conversation": _bounded_conversation(conversation),
             "retrieved_context": "",
             "sources": [],
             "citations": [],
@@ -654,6 +701,7 @@ class TutorWorkflowService:
                     inputs,
                     config=self._config(normalized_session_id),
                     context=TutorRunContext(tools=self._tools),
+                    durability="sync",
                 ),
                 timeout=self._timeout_seconds,
             )
@@ -669,7 +717,7 @@ class TutorWorkflowService:
         if not isinstance(answer, str) or not answer.strip():
             raise TutorExecutionError("Tutor 没有返回可展示结果。")
         try:
-            return TutorResult(
+            result = TutorResult(
                 session_id=normalized_session_id,
                 intent=state["intent"],
                 topic=state["topic"],
@@ -685,10 +733,25 @@ class TutorWorkflowService:
             )
         except (KeyError, TypeError, ValueError) as error:
             raise TutorExecutionError("Tutor 返回格式无效。") from error
+        try:
+            await self._learning_store.record_tutor_exchange(
+                user_id=normalized_user_id,
+                session_id=normalized_session_id,
+                topic=result.topic,
+                intent=result.intent,
+                user_content=prompt,
+                tutor_content=result.answer,
+                activity_type=result.learning_action,
+                metadata={"tools_used": list(result.tools_used)},
+            )
+        except Exception as error:
+            raise TutorExecutionError("Tutor 学习记录保存失败。") from error
+        return result
 
 
 def create_tutor_workflow_service(
     rag_service: RAGService,
+    learning_store: LearningDataStore,
     *,
     model: BaseChatModel | None = None,
     checkpointer: Any | None = None,
@@ -700,9 +763,12 @@ def create_tutor_workflow_service(
         quiz=QuizGeneratorTool(tutor_model),
         summary=LearningSummaryTool(tutor_model),
     )
-    graph = build_tutor_graph(checkpointer or InMemorySaver())
+    graph = build_tutor_graph(
+        learning_store.checkpointer if checkpointer is None else checkpointer
+    )
     return TutorWorkflowService(
         graph=graph,
         tools=tools,
+        learning_store=learning_store,
         timeout_seconds=timeout_seconds,
     )

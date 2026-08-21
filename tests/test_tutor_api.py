@@ -23,6 +23,7 @@ from app.tutor_workflow import (
 
 
 SESSION_ID = "11111111-1111-4111-8111-111111111111"
+USER_ID = "22222222-2222-4222-8222-222222222222"
 
 
 def tutor_result() -> TutorResult:
@@ -84,6 +85,7 @@ class TutorAPITests(unittest.TestCase):
         app.state.rag_service = None
         app.state.agent_service = None
         app.state.tutor_service = None
+        app.state.learning_data_store = None
         app.state.operation_guard = OperationGuard()
         app.state.request_history_writer = RequestHistoryWriter(
             Path(self.temporary_directory.name) / "requests.jsonl"
@@ -94,6 +96,7 @@ class TutorAPITests(unittest.TestCase):
         app.state.rag_service = None
         app.state.agent_service = None
         app.state.tutor_service = None
+        app.state.learning_data_store = None
         self.temporary_directory.cleanup()
 
     @staticmethod
@@ -102,16 +105,26 @@ class TutorAPITests(unittest.TestCase):
         service.chat = AsyncMock()
         return service
 
+    @staticmethod
+    def provider_override(service: Mock):
+        async def provide() -> Mock:
+            return service
+
+        return lambda: provide
+
     def test_tutor_chat_returns_learning_action_quiz_and_evidence(self) -> None:
         service = self.make_service()
         service.chat.return_value = tutor_result()
-        app.dependency_overrides[get_tutor_service_provider] = lambda: lambda: service
+        app.dependency_overrides[get_tutor_service_provider] = self.provider_override(
+            service
+        )
 
         with TestClient(app) as client:
             response = client.post(
                 "/api/tutor/chat",
                 json={
                     "message": " 帮我出题练习 Embedding ",
+                    "user_id": USER_ID,
                     "session_id": SESSION_ID,
                     "confirm_api_cost": True,
                 },
@@ -125,7 +138,9 @@ class TutorAPITests(unittest.TestCase):
         self.assertEqual(payload["citations"][0]["citation_id"], "S1")
         self.assertEqual(payload["evidence"][0]["context_id"], "S1")
         service.chat.assert_awaited_once_with(
-            SESSION_ID, "帮我出题练习 Embedding"
+            USER_ID,
+            SESSION_ID,
+            "帮我出题练习 Embedding",
         )
 
     def test_cost_confirmation_and_session_id_are_required_before_initialization(self) -> None:
@@ -133,16 +148,25 @@ class TutorAPITests(unittest.TestCase):
             with TestClient(app) as client:
                 missing_cost = client.post(
                     "/api/tutor/chat",
-                    json={"message": "解释 RAG", "session_id": SESSION_ID},
+                    json={
+                        "message": "解释 RAG",
+                        "user_id": USER_ID,
+                        "session_id": SESSION_ID,
+                    },
                 )
                 missing_session = client.post(
                     "/api/tutor/chat",
-                    json={"message": "解释 RAG", "confirm_api_cost": True},
+                    json={
+                        "message": "解释 RAG",
+                        "user_id": USER_ID,
+                        "confirm_api_cost": True,
+                    },
                 )
                 extra_field = client.post(
                     "/api/tutor/chat",
                     json={
                         "message": "解释 RAG",
+                        "user_id": USER_ID,
                         "session_id": SESSION_ID,
                         "confirm_api_cost": True,
                         "api_key": "must-not-be-accepted",
@@ -156,9 +180,12 @@ class TutorAPITests(unittest.TestCase):
 
     def test_tutor_timeout_and_failure_return_generic_errors(self) -> None:
         service = self.make_service()
-        app.dependency_overrides[get_tutor_service_provider] = lambda: lambda: service
+        app.dependency_overrides[get_tutor_service_provider] = self.provider_override(
+            service
+        )
         request = {
             "message": "解释 RAG",
+            "user_id": USER_ID,
             "session_id": SESSION_ID,
             "confirm_api_cost": True,
         }
@@ -179,7 +206,9 @@ class TutorAPITests(unittest.TestCase):
     def test_tutor_uses_agent_rate_and_budget_boundary(self) -> None:
         service = self.make_service()
         service.chat.return_value = tutor_result()
-        app.dependency_overrides[get_tutor_service_provider] = lambda: lambda: service
+        app.dependency_overrides[get_tutor_service_provider] = self.provider_override(
+            service
+        )
         app.state.operation_guard = OperationGuard(
             policies={
                 "agent": OperationPolicy(
@@ -192,6 +221,7 @@ class TutorAPITests(unittest.TestCase):
         )
         request = {
             "message": "解释 RAG",
+            "user_id": USER_ID,
             "session_id": SESSION_ID,
             "confirm_api_cost": True,
         }
@@ -207,13 +237,16 @@ class TutorAPITests(unittest.TestCase):
     def test_request_history_excludes_session_message_answer_and_evidence(self) -> None:
         service = self.make_service()
         service.chat.return_value = tutor_result()
-        app.dependency_overrides[get_tutor_service_provider] = lambda: lambda: service
+        app.dependency_overrides[get_tutor_service_provider] = self.provider_override(
+            service
+        )
 
         with TestClient(app) as client:
             response = client.post(
                 "/api/tutor/chat",
                 json={
                     "message": "private-question",
+                    "user_id": USER_ID,
                     "session_id": SESSION_ID,
                     "confirm_api_cost": True,
                 },
@@ -226,6 +259,7 @@ class TutorAPITests(unittest.TestCase):
         self.assertNotIn("private-question", log_text)
         self.assertNotIn("private-evidence", log_text)
         self.assertNotIn(SESSION_ID, log_text)
+        self.assertNotIn(USER_ID, log_text)
         self.assertEqual(
             json.loads(log_text.splitlines()[-1])["path"],
             "/api/tutor/chat",
@@ -248,13 +282,18 @@ class TutorAPITests(unittest.TestCase):
         tutor_service.chat.return_value = tutor_result()
         app.state.rag_service = rag_service
 
+        learning_store = object()
         with patch(
             "app.api.create_tutor_workflow_service",
             return_value=tutor_service,
-        ) as create:
+        ) as create, patch(
+            "app.api.get_learning_data_store",
+            new=AsyncMock(return_value=learning_store),
+        ):
             with TestClient(app) as client:
                 request = {
                     "message": "解释 Embedding",
+                    "user_id": USER_ID,
                     "session_id": SESSION_ID,
                     "confirm_api_cost": True,
                 }
@@ -263,7 +302,7 @@ class TutorAPITests(unittest.TestCase):
 
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 200)
-        create.assert_called_once_with(rag_service)
+        create.assert_called_once_with(rag_service, learning_store)
         self.assertEqual(tutor_service.chat.await_count, 2)
         rag_service.close.assert_called_once_with()
         self.assertIsNone(app.state.tutor_service)
