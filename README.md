@@ -29,6 +29,9 @@ Agent 通过三个固定工具动态选择资料问答、资料列表或公开�
 任意文件访问或任意网络访问工具。
 阶段 7 进一步用显式 `StateGraph` 管理学习目标、资料证据、三步任务、人工确认、
 进度和复盘；阶段 6 Agent 只作为受控的资料证据节点，不拥有整个流程控制权。
+V2 Stage 4 在不改动上述旧接口的前提下新增单 Tutor workflow：确定性识别问答、解释、
+练习、总结和学习规划，通过三个受控 Tool 复用现有 RAG、生成结构化练习或总结，并只在
+当前进程的 Session 中保留最近 20 条对话。
 
 上传、网页预览、替换、删除、回滚、日志轮转、报告对比和阶段 3 保护已经通过 Fake/Mock 自动
 测试。用户随后在本地页面完成了一次真实 PDF 上传、费用确认、增量索引和问答：索引
@@ -352,6 +355,10 @@ python -m uvicorn app.api:app --host 127.0.0.1 --port 8000 --no-access-log
   `{"message": "列出当前资料", "confirm_api_cost": true}`；可选
   `"allow_web_preview": true` 只授权本次请求预览用户明确提供的公开 URL；返回
   `answer`、`sources` 和 `tools_used`；
+- `POST http://127.0.0.1:8000/api/tutor/chat`：请求体为
+  `{"message": "帮我出题练习 Embedding", "session_id": "<UUID>",
+  "confirm_api_cost": true}`；返回 Tutor 意图、学习动作、Evidence/Citation、可选练习或
+  总结，并在同一进程内按 `session_id` 保留有限 Session State；
 - `POST http://127.0.0.1:8000/api/study-workflows`：请求体为
   `{"goal": "理解 RAG 的证据约束", "confirm_api_cost": true}`；调用一次受限 Agent
   整理资料证据、生成三步计划，并在返回前暂停等待人工确认；
@@ -387,7 +394,8 @@ Uvicorn 默认访问日志，由上述结构化日志替代。相同的安全字
 3 份备份。持久化失败不会影响 HTTP 响应，也不会把原始异常写入日志。
 
 当前错误类别包括 `request_validation`、`rate_limited`、`rag_processing`、`rag_unavailable`、
-`agent_processing`、`agent_timeout`、`agent_protected`、`workflow`、
+`agent_processing`、`agent_timeout`、`agent_protected`、`tutor_processing`、
+`tutor_timeout`、`tutor_protected`、`workflow`、
 `workflow_protected`、`web_preview`、
 `web_preview_protected`、`client_error`、`server_error` 和
 `unhandled_exception`。未预期异常会返回不含内部
@@ -408,6 +416,21 @@ Agent 执行最多等待 90 秒；已经进入同步 RAG 的外部调用仍受�
 服务端保留原始回答和来源，避免 Agent 二次改写证据；`list_available_materials` 只列
 文件名与大小；`preview_web_material` 还要求本次请求显式授权，只复用安全预览且永不
 写入索引。工具异常会转换为不含 URL、密钥、路径和原始异常的安全结果。
+
+## V2 Stage 4：Tutor Agent + LangGraph Learning Workflow
+
+`app/tutor_workflow.py` 使用一个显式 `StateGraph` 组织单 Tutor 学习流程。Router 采用
+可复现的确定性分类，不额外调用模型；Knowledge Retrieval Tool 直接复用
+`RAGService.ask()`，所以 Stage 3 的 Context Selector、Evidence 与 Citation 契约继续
+生效。Quiz Generator Tool 和 Learning Summary Tool 使用当前 ChatModel 的结构化输出，
+资料不足时不会继续生成练习或基于模型知识补全。
+
+Tutor 的 `conversation` 只保存在 `InMemorySaver`，最多保留最近 20 条、合计 12000
+字符，并让“继续出一道题”等续问继承上一轮 topic；进程重启后状态消失，不等于长期
+Memory。旧 `/api/ask`、`/api/agent` 和 `/api/study-workflows` 继续可用。QA、解释和
+学习规划最多执行现有 RAG 的 Query Embedding 与 Chat 调用；Quiz 和
+新主题 Summary 会在此基础上增加一次结构化 Chat 调用；Session Summary 只执行一次
+结构化 Chat 调用。完整边界和验证证据见 `docs/stage4-completion-report.md`。
 
 ## 阶段 7：LangGraph 学习规划工作流
 

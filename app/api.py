@@ -75,6 +75,18 @@ from app.study_workflow import (
     WorkflowStatus,
     open_sqlite_study_workflow_service,
 )
+from app.tutor_workflow import (
+    TUTOR_MAX_MESSAGE_LENGTH,
+    LearningAction,
+    LearningSummaryDraft,
+    QuizDraft,
+    TutorExecutionError,
+    TutorIntent,
+    TutorResult,
+    TutorTimeoutError,
+    TutorWorkflowService,
+    create_tutor_workflow_service,
+)
 from app.url_safety import UnsafeURLError, proxy_fake_ip_compatibility_enabled
 from app.web_materials import (
     WebMaterialConversionError,
@@ -163,6 +175,54 @@ class AgentResponse(BaseModel):
     answer: str
     sources: list[str]
     tools_used: list[str]
+
+
+class TutorChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=TUTOR_MAX_MESSAGE_LENGTH)
+    session_id: UUID
+    confirm_api_cost: Literal[True]
+
+    @field_validator("message")
+    @classmethod
+    def strip_and_validate_message(cls, value: str) -> str:
+        message = value.strip()
+        if not message:
+            raise ValueError("Tutor 消息不能为空。")
+        return message
+
+
+class TutorEvidenceResponse(BaseModel):
+    context_id: str
+    evidence_id: str
+    material_id: str
+    chunk_id: str
+    source: str
+    filename: str
+    source_type: str
+    page: int | None
+    section: str | None
+    chunk_index: int
+    excerpt: str
+    locator: str
+    content_hash: str
+    canonical_url: str | None
+
+
+class TutorChatResponse(BaseModel):
+    session_id: str
+    intent: TutorIntent
+    topic: str
+    answer: str
+    sources: list[str]
+    citations: list[CitationResponse]
+    evidence: list[TutorEvidenceResponse]
+    learning_action: LearningAction
+    quiz: QuizDraft | None
+    summary: LearningSummaryDraft | None
+    tools_used: list[str]
+    route_trace: list[str]
 
 
 class StudyWorkflowStartRequest(BaseModel):
@@ -403,6 +463,7 @@ async def lifespan(api: FastAPI) -> AsyncIterator[None]:
                 service.close()
         finally:
             api.state.agent_service = None
+            api.state.tutor_service = None
             api.state.rag_service = None
 
 
@@ -413,6 +474,7 @@ app = FastAPI(
 )
 app.state.rag_service = None
 app.state.agent_service = None
+app.state.tutor_service = None
 app.state.study_workflow_service = None
 app.state.material_manager = MaterialManager()
 app.state.request_history_writer = RequestHistoryWriter()
@@ -599,6 +661,32 @@ def get_agent_service_provider(request: Request) -> Callable[[], AgentService]:
     return lambda: get_agent_service(request)
 
 
+def get_tutor_service(request: Request) -> TutorWorkflowService:
+    """按需创建单 Tutor workflow，并与当前 RAG 服务共享同一索引和 ChatModel。"""
+    service = getattr(request.app.state, "tutor_service", None)
+    if service is not None:
+        return service
+
+    while True:
+        rag_service = get_rag_service(request)
+        with _service_lock:
+            service = getattr(request.app.state, "tutor_service", None)
+            if service is not None:
+                return service
+            if getattr(request.app.state, "rag_service", None) is not rag_service:
+                continue
+            service = create_tutor_workflow_service(rag_service)
+            request.app.state.tutor_service = service
+            return service
+
+
+def get_tutor_service_provider(
+    request: Request,
+) -> Callable[[], TutorWorkflowService]:
+    """返回惰性 Tutor 获取器，非法或未确认费用的请求不会初始化模型。"""
+    return lambda: get_tutor_service(request)
+
+
 async def get_study_workflow_service(request: Request) -> StudyWorkflowService:
     """按需打开本地 SQLite checkpointer，不初始化 RAG 或模型。"""
     service = getattr(request.app.state, "study_workflow_service", None)
@@ -635,6 +723,7 @@ def invalidate_rag_service(api: FastAPI) -> None:
     with _service_lock:
         service = getattr(api.state, "rag_service", None)
         api.state.agent_service = None
+        api.state.tutor_service = None
         api.state.rag_service = None
     if service is not None:
         try:
@@ -1158,6 +1247,60 @@ async def run_agent(
         answer=result.answer,
         sources=list(result.sources),
         tools_used=list(result.tools_used),
+    )
+
+
+@app.post("/api/tutor/chat", response_model=TutorChatResponse)
+async def tutor_chat(
+    payload: TutorChatRequest,
+    request: Request,
+    guard: Annotated[OperationGuard, Depends(get_operation_guard)],
+    service_provider: Annotated[
+        Callable[[], TutorWorkflowService],
+        Depends(get_tutor_service_provider),
+    ],
+) -> TutorChatResponse:
+    """在显式费用确认下执行单 Tutor 的有状态学习工作流。"""
+    try:
+        with guard.acquire("agent", units=1):
+            service = await asyncio.to_thread(service_provider)
+            result: TutorResult = await service.chat(
+                str(payload.session_id), payload.message
+            )
+    except OperationProtectionError as error:
+        request.state.error_category = "tutor_protected"
+        raise_operation_http_error(error)
+        raise
+    except TutorTimeoutError as error:
+        request.state.error_category = "tutor_timeout"
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Tutor 处理超时。",
+        ) from error
+    except TutorExecutionError as error:
+        request.state.error_category = "tutor_processing"
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Tutor 处理失败。",
+        ) from error
+
+    return TutorChatResponse(
+        session_id=result.session_id,
+        intent=result.intent,
+        topic=result.topic,
+        answer=result.answer,
+        sources=list(result.sources),
+        citations=[CitationResponse(**citation) for citation in result.citations],
+        evidence=[TutorEvidenceResponse(**item) for item in result.evidence],
+        learning_action=result.learning_action,
+        quiz=QuizDraft.model_validate(result.quiz) if result.quiz else None,
+        summary=(
+            LearningSummaryDraft.model_validate(result.summary)
+            if result.summary
+            else None
+        ),
+        tools_used=list(result.tools_used),
+        route_trace=list(result.route_trace),
     )
 
 
