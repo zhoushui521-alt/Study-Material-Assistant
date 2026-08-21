@@ -98,11 +98,14 @@ Schema 版本。已有记录但没有 Manifest 的旧索引只允许问答读取
 失败，不会自动清空或迁移。
 该命令会调用真实 Embedding API，可能产生费用；运行前应先确认解析结果。
 
-索引成功后，运行 `app/search_langchain.py`。当前正式问答仍采用 Stage 2 Baseline：
+索引成功后，运行 `app/search_langchain.py`。当前正式 Retrieval 仍采用 Stage 2 Baseline：
 Chroma Dense Vector 先从完整语料召回 Top 10，再按 80% 向量相关度 + 20% 关键词
 覆盖率重排并选择 Top 3 Seed。后续提问只需要向量化问题，不会重新向量化全部资料。
 Stage 3.1 已实现 BM25 + Dense + RRF 双路实验能力，但受控 A/B 没有证明它在当前
 Top 3 Seed 主链路上稳定优于 Baseline，因此没有替换正式问答 Retriever。
+Stage 3.4 在 Retriever 完成同源 ±2 相邻扩展后增加 Context Selector：保留全部 Seed，
+并为每个 Seed 只选择一个关键词覆盖率最高的已有相邻 Evidence，再构建请求内 Evidence
+ID。该步骤不重新召回，也不修改 Dense、阈值、排序、Top-K 或 Chunking。
 
 完整 LangChain RAG 入口为 `app/ask_langchain.py`：
 
@@ -123,7 +126,8 @@ python -m app.ask_langchain "资料太长应该怎么办？"
 `RunnableParallel`、`RunnableBranch` 和 `StrOutputParser` 组合以下固定流程：
 
 ```text
-问题 → 当前检索基线 → 有无证据分支 → Prompt → ChatModel → 文本解析 → 归一化与来源
+问题 → 当前检索基线 → Context Selector → Evidence Map → 有无证据分支
+     → Prompt → ChatModel → 文本解析 → 归一化与来源
 ```
 
 CLI 与 FastAPI 问答都通过 `RAGService` 执行；每个服务实例在初始化时只构造一次
@@ -303,6 +307,30 @@ python -m app.evaluate_chunking `
 分别下降 `0.1667 / 0.0298 / 0.2222`，并新增 Recall / Ranking Failure。因此只保留
 隔离实验能力，不把 `structure-aware-block-600-overlap-0-v1` 接入生产 Pipeline。
 完整证据和边界见 `docs/stage3-3-completion-report.md`。
+
+## Stage 3.4：Context Optimization 受控实验
+
+Stage 3.4 冻结 Stage 2 Retrieval、固定 180 字符 Chunk、Embedding、阈值、Top 3 Seed、
+同源 ±2 Adjacent Expansion 和最多 8 块的 A 组 Context。B 组只在已扩展 Evidence 内
+选择：保留全部 Seed，再为每个 Seed 选择一个 query keyword coverage 最高的相邻块；
+分数并列时按更近距离和原 Context 顺序稳定处理。没有重新召回，也没有模型选择器。
+
+以下命令复用已完成的 Stage 2 Retrieval Trace，并在 disposable index snapshot 中核对
+对应 Chunk；不会调用 Query Embedding、ChatModel 或 Reranker：
+
+```powershell
+python -m app.evaluate_context
+```
+
+当前 10 案例 `local_historical_retrieval_trace_replay` 结果：Context Precision
+`0.1500 → 0.2000`，Final Context Recall 保持 `1.0000`，平均 Context Chunk
+`7.3 → 5.2`，平均字符 `1222.2 → 848.7`，Selector 平均增量约 `0.1042 ms`。
+10 个案例均未移除 Gold；`mysql_out_of_scope` 仍返回 6 块 Context，因此无答案处理仍是
+未解决边界。当前没有与 ChatModel 匹配的可靠 tokenizer，Token 数明确未测量。
+
+由于 Precision 提升、Recall 保持且本地增量延迟很小，B 组已进入正式 `RAGService`
+的 LCEL Pipeline。结论只绑定当前 10 案例与历史 Retrieval Trace，不代表真实回答质量、
+Citation Support、并发或生产稳定性。完整证据见 `docs/stage3-4-completion-report.md`。
 
 ## 最小 FastAPI 服务
 

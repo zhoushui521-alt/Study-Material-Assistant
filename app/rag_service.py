@@ -10,6 +10,7 @@ from langchain_core.runnables import Runnable
 
 if __package__:
     from app.chat_client import ChatConfig
+    from app.context_selector import ContextSelector, EvidenceScoreContextSelector
     from app.embedding_client import EmbeddingConfig
     from app.hybrid_search import HybridRetriever
     from app.langchain_rag import (
@@ -29,6 +30,7 @@ if __package__:
     )
 else:
     from chat_client import ChatConfig
+    from context_selector import ContextSelector, EvidenceScoreContextSelector
     from embedding_client import EmbeddingConfig
     from hybrid_search import HybridRetriever
     from langchain_rag import (
@@ -72,11 +74,21 @@ class RAGService:
     retriever: BaseRetriever
     chat_model: BaseChatModel
     index_status: IndexCompatibilityStatus = IndexCompatibilityStatus.COMPATIBLE
+    context_selector: ContextSelector = field(
+        default_factory=lambda: EvidenceScoreContextSelector(
+            seed_count=RETRIEVAL_LIMIT,
+            adjacent_per_seed=1,
+        )
+    )
     rag_chain: Runnable[str, RAGAnswer] = field(init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self.rag_chain = create_rag_chain(self.retriever, self.chat_model)
+        self.rag_chain = create_rag_chain(
+            self.retriever,
+            self.chat_model,
+            context_selector=self.context_selector,
+        )
 
     def ask(self, question: str) -> RAGAnswer:
         """沿当前进程复用的 LCEL RAG 管道回答问题。"""

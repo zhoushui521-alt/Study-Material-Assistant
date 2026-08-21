@@ -27,6 +27,8 @@ DEFAULT_RELEVANCE_THRESHOLD = 0.25
 DEFAULT_BM25_K1 = 1.5
 DEFAULT_BM25_B = 0.75
 DEFAULT_RRF_K = 60
+CONTEXT_ROLE_METADATA_KEY = "_context_role"
+CONTEXT_SEED_RANK_METADATA_KEY = "_context_seed_rank"
 
 
 @dataclass(frozen=True)
@@ -414,7 +416,12 @@ def expand_adjacent_documents(
     expanded: list[Document] = []
     seen: set[tuple[str, object]] = set()
 
-    def append_document(document: Document) -> None:
+    def append_document(
+        document: Document,
+        *,
+        role: str,
+        seed_rank: int | None = None,
+    ) -> None:
         source = str(document.metadata.get("source", ""))
         chunk_index = document.metadata.get("chunk_index")
         identity = (
@@ -423,10 +430,15 @@ def expand_adjacent_documents(
         )
         if identity not in seen and len(expanded) < context_limit:
             seen.add(identity)
-            expanded.append(document)
+            metadata = {**document.metadata, CONTEXT_ROLE_METADATA_KEY: role}
+            if seed_rank is not None:
+                metadata[CONTEXT_SEED_RANK_METADATA_KEY] = seed_rank
+            expanded.append(
+                Document(page_content=document.page_content, metadata=metadata)
+            )
 
-    for document in documents:
-        append_document(document)
+    for seed_rank, document in enumerate(documents, start=1):
+        append_document(document, role="seed", seed_rank=seed_rank)
     if adjacent_window == 0 or len(expanded) >= context_limit:
         return expanded
 
@@ -463,7 +475,7 @@ def expand_adjacent_documents(
             for neighbor_index in (chunk_index - distance, chunk_index + distance):
                 neighbor = source_documents.get(neighbor_index)
                 if neighbor is not None:
-                    append_document(neighbor)
+                    append_document(neighbor, role="adjacent")
                 if len(expanded) >= context_limit:
                     return expanded
 

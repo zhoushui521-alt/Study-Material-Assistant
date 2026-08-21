@@ -3,6 +3,7 @@ from unittest.mock import Mock, patch
 
 from langchain_core.documents import Document
 
+from app.context_selector import EvidenceScoreContextSelector
 from app.langchain_rag import RAGAnswer
 from app.index_manifest import IndexCompatibilityStatus
 from app.rag_service import (
@@ -61,6 +62,9 @@ class RAGServiceTests(unittest.TestCase):
         )
         self.assertIs(service.vector_store, vector_store)
         self.assertIs(service.retriever, hybrid_retriever.return_value)
+        self.assertIsInstance(service.context_selector, EvidenceScoreContextSelector)
+        self.assertEqual(service.context_selector.seed_count, RETRIEVAL_LIMIT)
+        self.assertEqual(service.context_selector.adjacent_per_seed, 1)
         self.assertIsNotNone(service.rag_chain)
         self.assertEqual(service.index_status, IndexCompatibilityStatus.COMPATIBLE)
         check_index_compatibility.assert_called_once()
@@ -129,7 +133,11 @@ class RAGServiceTests(unittest.TestCase):
 
         self.assertIs(first_result, expected)
         self.assertIs(second_result, expected)
-        create_chain.assert_called_once_with(retriever, chat_model)
+        create_chain.assert_called_once_with(
+            retriever,
+            chat_model,
+            context_selector=service.context_selector,
+        )
         self.assertEqual(
             [call.args[0] for call in chain.invoke.call_args_list],
             ["RAG 是什么？", "为什么要检索？"],

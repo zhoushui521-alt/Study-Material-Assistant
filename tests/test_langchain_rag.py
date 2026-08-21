@@ -75,8 +75,37 @@ class LangChainRAGTests(unittest.TestCase):
 
         self.assertIsInstance(chain, Runnable)
         self.assertIn("retrieve_documents", graph_node_names)
+        self.assertIn("select_context_evidence", graph_node_names)
         self.assertIn("Branch", graph_node_names)
         self.assertEqual(result.sources, (self.document,))
+
+    def test_selects_context_before_assigning_evidence_ids(self) -> None:
+        removed = Document(
+            page_content="noise",
+            metadata={"source": "noise.md", "chunk_index": 1},
+        )
+        retriever = Mock()
+        retriever.invoke.return_value = [removed, self.document]
+        selector = Mock()
+        selector.select.return_value = [self.document]
+        chat_model = Mock()
+        chat_model.invoke.return_value = AIMessage(content="应该切分资料。[S1]")
+
+        result = answer_with_retriever(
+            "资料太长怎么办？",
+            retriever,
+            chat_model,
+            context_selector=selector,
+        )
+
+        selector.select.assert_called_once_with(
+            "资料太长怎么办？",
+            [removed, self.document],
+        )
+        self.assertEqual(result.sources, (self.document,))
+        prompt_messages = chat_model.invoke.call_args.args[0].to_messages()
+        self.assertIn(self.document.page_content, prompt_messages[1].content)
+        self.assertNotIn(removed.page_content, prompt_messages[1].content)
 
     def test_answer_retrieval_configuration_supports_cross_chunk_questions(self) -> None:
         self.assertEqual(RETRIEVAL_LIMIT, 3)
@@ -291,6 +320,10 @@ class LangChainRAGTests(unittest.TestCase):
                         for document in result.sources
                     )
                 )
+                self.assertEqual(
+                    [document.metadata["_context_role"] for document in result.sources],
+                    ["seed", "adjacent", "adjacent"],
+                )
             finally:
                 vector_store.delete_collection()
                 vector_store._client.close()
@@ -331,6 +364,10 @@ class LangChainRAGTests(unittest.TestCase):
                         for document in expanded
                     )
                 )
+                self.assertEqual(
+                    [document.metadata["_context_role"] for document in expanded],
+                    ["seed", "adjacent", "adjacent"],
+                )
             finally:
                 vector_store.delete_collection()
                 vector_store._client.close()
@@ -364,6 +401,23 @@ class LangChainRAGTests(unittest.TestCase):
             answer_with_retriever("RAG 是什么？", retriever, Mock())
 
         self.assertNotIn("vector store unavailable", str(context.exception))
+        self.assertIsInstance(context.exception.__cause__, RuntimeError)
+
+    def test_reports_context_selection_failure(self) -> None:
+        retriever = Mock()
+        retriever.invoke.return_value = [self.document]
+        selector = Mock()
+        selector.select.side_effect = RuntimeError("selector internals")
+
+        with self.assertRaisesRegex(LangChainRAGError, "选择 LLM Context") as context:
+            answer_with_retriever(
+                "资料太长怎么办？",
+                retriever,
+                Mock(),
+                context_selector=selector,
+            )
+
+        self.assertNotIn("selector internals", str(context.exception))
         self.assertIsInstance(context.exception.__cause__, RuntimeError)
 
     def test_reports_chat_model_failure(self) -> None:

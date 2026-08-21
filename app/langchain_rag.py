@@ -19,6 +19,7 @@ from langchain_openai import ChatOpenAI
 
 if __package__:
     from app.chat_client import ChatConfig
+    from app.context_selector import BaselineContextSelector, ContextSelector
     from app.evidence import (
         Citation,
         build_evidence_context,
@@ -27,6 +28,7 @@ if __package__:
     )
 else:
     from chat_client import ChatConfig
+    from context_selector import BaselineContextSelector, ContextSelector
     from evidence import (
         Citation,
         build_evidence_context,
@@ -254,6 +256,20 @@ def _retrieve_documents(
     return list(documents or [])
 
 
+def _select_context(
+    state: dict[str, object],
+    selector: ContextSelector,
+) -> dict[str, object]:
+    try:
+        documents = selector.select(
+            str(state["question"]),
+            state["documents"],
+        )
+    except Exception as error:
+        raise LangChainRAGError("选择 LLM Context 失败。") from error
+    return {**state, "documents": documents}
+
+
 def _invoke_chat_model(
     prompt_value: object,
     chat_model: BaseChatModel,
@@ -310,8 +326,10 @@ def _finalize_rag_answer(state: dict[str, object]) -> RAGAnswer:
 def create_rag_chain(
     retriever: BaseRetriever,
     chat_model: BaseChatModel,
+    context_selector: ContextSelector | None = None,
 ) -> Runnable[str, RAGAnswer]:
     """构造可由 CLI、API 和评测复用的固定 LCEL RAG 管道。"""
+    selector = context_selector or BaselineContextSelector()
     retrieve_documents = RunnableLambda(
         lambda question: _retrieve_documents(question, retriever),
         name="retrieve_documents",
@@ -320,6 +338,9 @@ def create_rag_chain(
         question=RunnablePassthrough(),
         documents=retrieve_documents,
     ).with_config(run_name="retrieve_context") | RunnableLambda(
+        lambda state: _select_context(state, selector),
+        name="select_context_evidence",
+    ) | RunnableLambda(
         _attach_evidence_context,
         name="build_evidence_context",
     )
@@ -385,6 +406,12 @@ def answer_with_retriever(
     question: str,
     retriever: BaseRetriever,
     chat_model: BaseChatModel,
+    *,
+    context_selector: ContextSelector | None = None,
 ) -> RAGAnswer:
     """兼容旧调用入口；内部统一执行 LCEL RAG 管道。"""
-    return create_rag_chain(retriever, chat_model).invoke(question)
+    return create_rag_chain(
+        retriever,
+        chat_model,
+        context_selector=context_selector,
+    ).invoke(question)
