@@ -33,6 +33,7 @@ const materialRequestMeta = document.querySelector("#material-request-meta");
 const materialList = document.querySelector("#material-list");
 const materialCount = document.querySelector("#material-count");
 const emptyMaterials = document.querySelector("#empty-materials");
+
 const webPreviewForm = document.querySelector("#web-preview-form");
 const webMaterialUrl = document.querySelector("#web-material-url");
 const webOperation = document.querySelector("#web-operation");
@@ -66,6 +67,8 @@ const learningHistoryList = document.querySelector("#learning-history-list");
 const emptyLearningHistory = document.querySelector("#empty-learning-history");
 const refreshHistoryButton = document.querySelector("#refresh-history-button");
 const newSessionButton = document.querySelector("#new-session-button");
+const focusTriggers = Array.from(document.querySelectorAll("[data-focus-target]"));
+const tutorSuggestions = Array.from(document.querySelectorAll(".tutor-suggestion"));
 
 const STORAGE_KEYS = {
   userId: "zhixing.user_id",
@@ -1172,6 +1175,43 @@ function initializeRevealAnimations() {
   }
 }
 
+function focusLearningTarget(trigger) {
+  const targetSelector = trigger.dataset.focusTarget;
+  const target = targetSelector ? document.querySelector(targetSelector) : null;
+  if (!target) {
+    return;
+  }
+  activateMode("rag");
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  target.scrollIntoView({
+    behavior: reduceMotion ? "auto" : "smooth",
+    block: "center",
+  });
+  window.setTimeout(() => target.focus(), reduceMotion ? 0 : 420);
+}
+
+function openTutorSuggestion(trigger) {
+  const prompt = String(trigger.dataset.tutorPrompt || "").trim();
+  const topic = String(trigger.dataset.topic || "").trim();
+  activateMode("tutor");
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  document.querySelector("#learn").scrollIntoView({
+    behavior: reduceMotion ? "auto" : "smooth",
+    block: "start",
+  });
+
+  if (tutorIdentity.sessionId && tutorIdentity.userId) {
+    tutorMessageInput.value = prompt;
+    window.setTimeout(() => tutorMessageInput.focus(), reduceMotion ? 0 : 420);
+    return;
+  }
+
+  if (topic) {
+    tutorTopicInput.value = topic;
+  }
+  window.setTimeout(() => tutorTopicInput.focus(), reduceMotion ? 0 : 420);
+}
+
 questionInput.addEventListener("input", updateCharacterCount);
 questionInput.addEventListener("keydown", (event) => {
   if (event.ctrlKey && event.key === "Enter") {
@@ -1207,6 +1247,7 @@ webOperation.addEventListener("change", () => {
 confirmIndexButton.addEventListener("click", () => {
   void confirmIndex();
 });
+
 ragTab.addEventListener("click", () => {
   activateMode("rag");
 });
@@ -1233,6 +1274,17 @@ newSessionButton.addEventListener("click", () => {
 refreshHistoryButton.addEventListener("click", () => {
   void loadLearningHistory();
 });
+for (const trigger of focusTriggers) {
+  trigger.addEventListener("click", (event) => {
+    event.preventDefault();
+    focusLearningTarget(trigger);
+  });
+}
+for (const trigger of tutorSuggestions) {
+  trigger.addEventListener("click", () => {
+    openTutorSuggestion(trigger);
+  });
+}
 
 initializeRevealAnimations();
 updateCharacterCount();

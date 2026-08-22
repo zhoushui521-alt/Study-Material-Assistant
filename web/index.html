@@ -7,10 +7,12 @@
       name="description"
       content="知行是一位基于个人学习资料工作的 AI 学习伙伴，帮助你理解知识、核对证据并持续学习。"
     >
-    <meta name="theme-color" content="#f3f0e8">
+    <meta name="theme-color" content="#f5f5f0">
     <title>知行 | Zhixing AI Learning Companion</title>
+    <link rel="icon" href="data:,">
     <link rel="preload" href="/static/zhixing-hero.png" as="image" fetchpriority="high">
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="preload" href="/static/zhixing-study-objects.png" as="image">
+    <link rel="stylesheet" href="/static/styles.css?v=20260822-5">
   </head>
   <body>
     <a class="skip-link" href="#learn">跳到学习空间</a>
@@ -25,63 +27,68 @@
           </span>
         </a>
         <div class="nav-links">
-          <a href="#why">产品理念</a>
-          <a href="#capabilities">核心能力</a>
-          <a href="#trust">可信回答</a>
+          <a href="#why">为什么知行</a>
+          <a href="#capabilities">学习方式</a>
+          <a href="#trust">为什么可信</a>
         </div>
         <a class="nav-cta" href="#learn">开始学习</a>
       </nav>
     </header>
 
     <main>
-      <section class="hero section-shell" aria-labelledby="page-title">
-        <div class="hero-copy" data-reveal>
-          <p class="hero-brand">ZHIXING AI LEARNING COMPANION</p>
-          <h1 id="page-title">让知识被理解，<br>让学习真正发生。</h1>
-          <p class="hero-lede">基于你的资料回答、解释、练习和总结，每一步都有证据可核对。</p>
-          <a class="primary-cta" href="#learn">开始学习</a>
+      <section class="hero" aria-labelledby="page-title">
+        <div class="hero-orbit hero-orbit-left" aria-hidden="true" data-reveal>
+          <img src="/static/zhixing-hero.png" width="1122" height="1402" alt="">
         </div>
-        <figure class="hero-visual" data-reveal data-reveal-delay="1">
-          <img
-            src="/static/zhixing-hero.png"
-            width="1122"
-            height="1402"
-            alt="层叠的学习资料通过金色证据线汇聚成清晰知识的抽象场景"
-            fetchpriority="high"
-          >
-          <figcaption>
-            <span>知</span>
-            <p>理解知识</p>
-            <span>行</span>
-            <p>应用知识</p>
-          </figcaption>
-        </figure>
+
+        <div class="hero-copy section-shell" data-reveal>
+          <p class="hero-brand">ZHIXING AI / LEARNING COMPANION</p>
+          <h1 id="page-title">从资料出发，<br><em>建立自己的理解。</em></h1>
+          <p class="hero-lede">基于你的资料回答、解释和练习，每个结论都带着可核对的证据。</p>
+          <div class="hero-actions">
+            <a class="primary-cta" href="#learn">开始学习 <span aria-hidden="true">→</span></a>
+            <a class="text-cta" href="#capabilities">了解学习方式</a>
+          </div>
+        </div>
+
+        <div class="hero-orbit hero-orbit-right" aria-hidden="true" data-reveal data-reveal-delay="1">
+          <img src="/static/zhixing-study-objects.png" width="1024" height="683" alt="">
+        </div>
+
+        <a class="hero-question" href="#question" data-focus-target="#question" data-reveal data-reveal-delay="2">
+          <span class="hero-question-icon" aria-hidden="true">知</span>
+          <span>
+            <small>从真实问题开始</small>
+            <strong>这份资料真正想告诉我什么？</strong>
+          </span>
+          <b aria-hidden="true">→</b>
+        </a>
       </section>
 
       <section class="belief-section section-shell" id="why" aria-labelledby="belief-title">
         <div class="belief-statement" data-reveal>
-          <p>资料被收藏，不等于知识被掌握。</p>
-          <h2 id="belief-title">知行把分散的资料，变成可以追问、理解和继续行动的学习过程。</h2>
+          <p>为什么学习没有真正发生</p>
+          <h2 id="belief-title">学习的关键，<br>不是保存更多资料。</h2>
         </div>
         <div class="belief-notes" data-reveal data-reveal-delay="1">
-          <p>知，是看见概念之间的联系。</p>
-          <p>行，是知道下一步应该做什么。</p>
-          <strong>知行合一，学习才真正发生。</strong>
+          <p><span>知</span> 看见概念、证据与上下文。</p>
+          <p><span>行</span> 把理解转化为下一步行动。</p>
+          <strong>知行把分散的资料，整理成可以追问、可以核对、可以继续的学习上下文。</strong>
         </div>
       </section>
 
       <section class="capabilities-section section-shell" id="capabilities" aria-labelledby="capabilities-title">
         <header class="section-heading" data-reveal>
-          <h2 id="capabilities-title">从资料开始，走向真正理解</h2>
-          <p>技术在后台工作，用户只需要专注于学习。</p>
+          <h2 id="capabilities-title">让资料成为可用的知识。</h2>
+          <p>解析内容、保留来源，并把它们组织成可以持续对话的个人知识库。</p>
         </header>
 
         <div class="capability-grid">
           <article class="capability capability-materials" data-reveal>
             <div>
               <p class="capability-index">理解你的资料</p>
-              <h3>把阅读负担，变成可探索的知识空间。</h3>
-              <p>上传 PDF、Word、Markdown、课程资料、论文或笔记，知行完成解析与索引。</p>
+              <h3>不只存下文件，也建立可追问的学习上下文。</h3>
+              <p>上传 PDF、Word、Markdown、课程资料、论文或笔记，知行完成解析并保留来源。</p>
             </div>
             <div class="format-orbit" aria-label="支持的资料格式">
               <span>PDF</span>
@@ -94,7 +101,7 @@
 
           <article class="capability capability-dialogue" data-reveal data-reveal-delay="1">
             <p class="capability-index">和知识对话</p>
-            <h3>答案不只出现，还能回到出处。</h3>
+            <h3>每个结论，都能回到支持它的原文。</h3>
             <p>每次回答都可以关联文件、页码、Evidence 摘录和定位信息。</p>
             <div class="citation-miniature" aria-label="Citation 信息结构">
               <span>文件名称</span>
@@ -106,7 +113,7 @@
 
           <article class="capability capability-tutor" data-reveal data-reveal-delay="2">
             <p class="capability-index">AI Tutor</p>
-            <h3>不止查找答案，也陪你把知识学会。</h3>
+            <h3>围绕同一份资料，把一个问题真正学懂。</h3>
             <ul>
               <li>解释概念</li>
               <li>生成练习</li>
@@ -120,9 +127,8 @@
       <section class="trust-section" id="trust" aria-labelledby="trust-title">
         <div class="section-shell trust-layout">
           <header class="trust-copy" data-reveal>
-            <p class="section-kicker">WHY THE ANSWER IS TRUSTWORTHY</p>
-            <h2 id="trust-title">可信，不是因为 AI 说得像真的。</h2>
-            <p>可信来自一条可以回看、检查和定位的证据路径。</p>
+            <h2 id="trust-title">可信回答，要经得起核对。</h2>
+            <p>知行优先展示文件、页码、原文摘录和定位信息；资料不足时，也会明确说明。</p>
           </header>
 
           <ol class="evidence-flow" aria-label="知行可信回答流程" data-reveal data-reveal-delay="1">
@@ -135,14 +141,14 @@
 
           <aside class="evidence-contract" data-reveal data-reveal-delay="2">
             <div class="contract-heading">
-              <span>S1</span>
-              <strong>Citation 返回结构</strong>
+              <span>引用</span>
+              <strong>一条真实 Citation</strong>
             </div>
             <dl>
-              <div><dt>filename</dt><dd>资料文件</dd></div>
-              <div><dt>page</dt><dd>PDF 页码</dd></div>
-              <div><dt>excerpt</dt><dd>支持回答的摘录</dd></div>
-              <div><dt>locator</dt><dd>可核对定位</dd></div>
+              <div><dt>文件名称</dt><dd>来自哪一份资料</dd></div>
+              <div><dt>页码</dt><dd>PDF 中的具体页面</dd></div>
+              <div><dt>Evidence</dt><dd>支持回答的原文摘录</dd></div>
+              <div><dt>定位信息</dt><dd>可回看、可核对的位置</dd></div>
             </dl>
           </aside>
         </div>
@@ -150,23 +156,25 @@
 
       <section class="tutor-story section-shell" aria-labelledby="tutor-story-title">
         <div class="tutor-story-copy" data-reveal>
-          <h2 id="tutor-story-title">AI Tutor 已经在这里。</h2>
-          <p>它使用现有 Tutor 工作流，根据真实意图选择问答、解释、练习、总结或学习规划。</p>
+          <h2 id="tutor-story-title"><span>不是替你思考，</span><span>而是陪你学懂。</span></h2>
+          <p>围绕同一份资料解释概念、生成练习、整理要点，并给出清晰的下一步建议。</p>
+          <button class="tutor-story-cta tutor-suggestion" type="button" data-topic="理解 Embedding" data-tutor-prompt="我还是没理解 Embedding，请结合资料换一种方式解释。">
+            让 Tutor 换一种方式解释 <span aria-hidden="true">→</span>
+          </button>
         </div>
         <div class="tutor-actions" data-reveal data-reveal-delay="1" aria-label="AI Tutor 已实现能力">
-          <article><strong>解释</strong><p>换一种更容易理解的方式说明概念。</p></article>
-          <article><strong>练习</strong><p>根据资料生成可回答的练习与解释。</p></article>
-          <article><strong>总结</strong><p>整理已经出现的学习内容和关键点。</p></article>
-          <article><strong>下一步</strong><p>给出有限、明确的学习行动建议。</p></article>
+          <article><strong>换个角度</strong><h3>解释</h3><p>换一种更容易理解的方式说明概念。</p></article>
+          <article><strong>检验理解</strong><h3>练习</h3><p>根据资料生成可回答的练习与解释。</p></article>
+          <article><strong>整理重点</strong><h3>总结</h3><p>整理已经出现的学习内容和关键点。</p></article>
+          <article><strong>继续行动</strong><h3>下一步</h3><p>给出有限、明确的学习行动建议。</p></article>
         </div>
       </section>
 
       <section class="learning-space" id="learn" aria-labelledby="learn-title">
         <div class="workspace-intro section-shell" data-reveal>
           <div>
-            <p class="section-kicker">REAL LEARNING SPACE</p>
-            <h2 id="learn-title">进入你的学习空间</h2>
-            <p>下面不是产品截图。资料、问答、Tutor 和学习记录都连接当前真实 API。</p>
+            <h2 id="learn-title">学习，从这里继续。</h2>
+            <p>上传资料，开始问答或进入 AI Tutor。资料、引用与学习记录都来自当前真实服务。</p>
           </div>
           <div class="api-state" id="api-state" data-state="checking" role="status">
             <span class="state-dot" aria-hidden="true"></span>
@@ -256,14 +264,21 @@
               <p class="request-meta" id="material-request-meta" hidden></p>
             </div>
 
-            <div class="material-library">
-              <div class="library-heading">
-                <h4>当前资料</h4>
-                <span id="material-count">0</span>
+            <details class="material-library" open>
+              <summary id="material-library-toggle" class="library-heading">
+                <strong class="library-title">
+                  当前资料
+                  <span id="material-count">0</span>
+                </strong>
+                <span class="library-toggle" aria-hidden="true">
+                  <span class="library-toggle-symbol"></span>
+                </span>
+              </summary>
+              <div id="material-library-content" class="material-library-content">
+                <ul id="material-list"></ul>
+                <p class="empty-state" id="empty-materials" hidden>还没有资料。上传第一份内容后，知识库会出现在这里。</p>
               </div>
-              <ul id="material-list"></ul>
-              <p class="empty-state" id="empty-materials" hidden>还没有资料。上传第一份内容后，知识库会出现在这里。</p>
-            </div>
+            </details>
           </aside>
 
           <section class="learning-column" aria-labelledby="learning-column-title">
@@ -392,9 +407,9 @@
       </section>
 
       <section class="final-cta section-shell" aria-labelledby="final-title" data-reveal>
-        <p>知，是理解。行，是继续。</p>
-        <h2 id="final-title">带着证据学习，带着行动离开。</h2>
-        <a class="primary-cta" href="#learn">开始学习</a>
+        <p>从资料，到理解，再到行动。</p>
+        <h2 id="final-title">从一份资料，开始一套理解。</h2>
+        <a class="primary-cta" href="#learn">开始学习 <span aria-hidden="true">→</span></a>
       </section>
     </main>
 
@@ -407,6 +422,6 @@
       <a href="/docs" target="_blank" rel="noreferrer">查看 API 文档</a>
     </footer>
 
-    <script src="/static/app.js" defer></script>
+    <script src="/static/app.js?v=20260822-4" defer></script>
   </body>
 </html>

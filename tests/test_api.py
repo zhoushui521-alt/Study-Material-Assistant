@@ -130,6 +130,7 @@ class APITests(unittest.TestCase):
                     stylesheet = client.get("/static/styles.css")
                     script = client.get("/static/app.js")
                     hero_image = client.get("/static/zhixing-hero.png")
+                    study_objects_image = client.get("/static/zhixing-study-objects.png")
 
         self.assertEqual(page.status_code, 200)
         self.assertIn("text/html", page.headers["content-type"])
@@ -168,11 +169,16 @@ class APITests(unittest.TestCase):
         self.assertNotIn("innerHTML", script.text)
         self.assertEqual(hero_image.status_code, 200)
         self.assertIn("image/png", hero_image.headers["content-type"])
+        self.assertEqual(study_objects_image.status_code, 200)
+        self.assertIn("image/png", study_objects_image.headers["content-type"])
         create_service.assert_not_called()
         request_paths = [
             json.loads(record.getMessage())["path"] for record in captured.records
         ]
-        self.assertEqual(request_paths, ["/", "/static", "/static", "/static"])
+        self.assertEqual(
+            request_paths,
+            ["/", "/static", "/static", "/static", "/static"],
+        )
 
     def test_ask_returns_answer_and_source_labels(self) -> None:
         service = Mock(spec=RAGService)
