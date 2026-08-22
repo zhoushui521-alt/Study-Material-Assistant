@@ -15,4 +15,5 @@ data/learning/
 data/jobs/
 data/models/
 data/index_migrations/
+data/user_workspaces/
 evaluation/results/

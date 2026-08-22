@@ -8,6 +8,23 @@ from fastapi.testclient import TestClient
 from app.api import app, get_learning_data_store
 from app.learning_data import LearningDataStore
 from app.operation_guard import OperationGuard
+
+def register(
+    client: TestClient,
+    email: str,
+    *,
+    display_name: str = "学习者",
+) -> dict:
+    response = client.post(
+        "/api/auth/register",
+        json={
+            "email": email,
+            "password": "safe-test-password",
+            "display_name": display_name,
+        },
+    )
+    return response.json()
+
 from app.request_history import RequestHistoryWriter
 
 
@@ -42,30 +59,69 @@ class LearningDataAPITests(unittest.TestCase):
         self.store = None
         self.temporary_directory.cleanup()
 
-    def test_create_and_query_user(self) -> None:
+    def test_register_duplicate_login_logout_and_password_safety(self) -> None:
+        credentials = {
+            "email": "learner@example.com",
+            "password": "correct-horse-battery",
+            "display_name": "水哥",
+        }
         with TestClient(app) as client:
-            created = client.post("/api/users")
-            loaded = client.get(f"/api/users/{created.json()['user_id']}")
+            created = client.post("/api/auth/register", json=credentials)
+            current = client.get("/api/auth/me")
+            duplicate = client.post("/api/auth/register", json=credentials)
+
+            async def password_state() -> tuple[str, str | None]:
+                assert self.store is not None
+                user = await self.store.get_user_by_email(credentials["email"])
+                return credentials["password"], user.password_hash
+
+            plain_password, password_hash = client.portal.call(password_state)
+            logged_out = client.post("/api/auth/logout")
+            anonymous = client.get("/api/auth/me")
+            wrong_password = client.post(
+                "/api/auth/login",
+                json={
+                    "email": credentials["email"],
+                    "password": "definitely-wrong",
+                },
+            )
+            logged_in = client.post(
+                "/api/auth/login",
+                json={
+                    "email": credentials["email"],
+                    "password": credentials["password"],
+                },
+            )
 
         self.assertEqual(created.status_code, 201)
-        self.assertEqual(loaded.status_code, 200)
-        self.assertEqual(loaded.json(), created.json())
+        self.assertEqual(current.json(), created.json())
+        self.assertEqual(duplicate.status_code, 409)
+        self.assertNotIn("password", created.json())
+        self.assertIsNotNone(password_hash)
+        self.assertNotEqual(password_hash, plain_password)
+        self.assertTrue(password_hash.startswith("scrypt$"))
+        self.assertEqual(logged_out.status_code, 204)
+        self.assertEqual(anonymous.status_code, 401)
+        self.assertEqual(wrong_password.status_code, 401)
+        self.assertEqual(logged_in.status_code, 200)
 
     def test_create_list_sessions_and_hide_other_user_session(self) -> None:
         with TestClient(app) as client:
-            first_user = client.post("/api/users").json()["user_id"]
-            second_user = client.post("/api/users").json()["user_id"]
+            first_user = register(client, "first@example.com")["user_id"]
             created = client.post(
-                f"/api/users/{first_user}/sessions",
+                "/api/sessions",
                 json={"topic": " Embedding "},
             )
-            first_sessions = client.get(f"/api/users/{first_user}/sessions")
-            second_sessions = client.get(f"/api/users/{second_user}/sessions")
+            first_sessions = client.get("/api/sessions")
+            client.post("/api/auth/logout")
+            second_user = register(client, "second@example.com")["user_id"]
+            second_sessions = client.get("/api/sessions")
             hidden = client.get(
-                f"/api/users/{second_user}/history",
+                "/api/history",
                 params={"session_id": created.json()["session_id"]},
             )
 
+        self.assertNotEqual(first_user, second_user)
         self.assertEqual(created.status_code, 201)
         self.assertEqual(created.json()["topic"], "Embedding")
         self.assertEqual(len(first_sessions.json()["sessions"]), 1)
@@ -75,9 +131,9 @@ class LearningDataAPITests(unittest.TestCase):
 
     def test_history_returns_persisted_messages_and_learning_records(self) -> None:
         with TestClient(app) as client:
-            user_id = client.post("/api/users").json()["user_id"]
+            user_id = register(client, "history@example.com")["user_id"]
             session_id = client.post(
-                f"/api/users/{user_id}/sessions",
+                "/api/sessions",
                 json={"topic": "RAG"},
             ).json()["session_id"]
 
@@ -96,7 +152,7 @@ class LearningDataAPITests(unittest.TestCase):
 
             client.portal.call(seed_history)
             history = client.get(
-                f"/api/users/{user_id}/history",
+                "/api/history",
                 params={"session_id": session_id},
             )
 
@@ -112,23 +168,18 @@ class LearningDataAPITests(unittest.TestCase):
             {"tools_used": ["learning_summary"]},
         )
 
-    def test_database_failure_returns_generic_error_without_internal_detail(self) -> None:
-        class FailingStore:
-            async def get_user(self, user_id: str):
-                del user_id
-                raise RuntimeError("database-path-and-secret")
-
-        async def provide_failing_store() -> FailingStore:
-            return FailingStore()
-
-        app.dependency_overrides[get_learning_data_store] = provide_failing_store
-
+    def test_invalid_bearer_token_is_rejected(self) -> None:
         with TestClient(app) as client:
-            response = client.get(f"/api/users/{uuid4()}")
+            response = client.get(
+                "/api/auth/me",
+                headers={"Authorization": "Bearer forged-token"},
+            )
 
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.json(), {"detail": "学习数据服务暂不可用。"})
-        self.assertNotIn("database-path-and-secret", response.text)
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(
+            response.json(),
+            {"detail": "登录状态无效或已过期。"},
+        )
 
 
 if __name__ == "__main__":

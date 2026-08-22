@@ -8,12 +8,15 @@ from fastapi.testclient import TestClient
 
 from app.api import (
     app,
+    get_learning_data_store,
     get_tutor_service_provider,
     invalidate_rag_service,
 )
 from app.operation_guard import OperationGuard, OperationPolicy
 from app.rag_service import RAGService
 from app.request_history import RequestHistoryWriter
+from app.learning_data import LearningDataNotFoundError
+from tests.auth_helpers import clear_user_services, install_authenticated_user
 from app.tutor_workflow import (
     TutorExecutionError,
     TutorResult,
@@ -82,6 +85,12 @@ class TutorAPITests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         app.dependency_overrides.clear()
+        install_authenticated_user()
+        self.learning_store = Mock()
+        self.learning_store.get_session = AsyncMock()
+        app.dependency_overrides[get_learning_data_store] = (
+            lambda: self.learning_store
+        )
         app.state.rag_service = None
         app.state.agent_service = None
         app.state.tutor_service = None
@@ -93,6 +102,7 @@ class TutorAPITests(unittest.TestCase):
 
     def tearDown(self) -> None:
         app.dependency_overrides.clear()
+        clear_user_services()
         app.state.rag_service = None
         app.state.agent_service = None
         app.state.tutor_service = None
@@ -124,7 +134,6 @@ class TutorAPITests(unittest.TestCase):
                 "/api/tutor/chat",
                 json={
                     "message": " 帮我出题练习 Embedding ",
-                    "user_id": USER_ID,
                     "session_id": SESSION_ID,
                     "confirm_api_cost": True,
                 },
@@ -143,6 +152,28 @@ class TutorAPITests(unittest.TestCase):
             "帮我出题练习 Embedding",
         )
 
+    def test_tutor_rejects_session_owned_by_another_user_before_model_call(self) -> None:
+        service = self.make_service()
+        self.learning_store.get_session.side_effect = LearningDataNotFoundError(
+            "session not owned by current user"
+        )
+        app.dependency_overrides[get_tutor_service_provider] = self.provider_override(
+            service
+        )
+
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/tutor/chat",
+                json={
+                    "message": "读取另一位用户的记录",
+                    "session_id": SESSION_ID,
+                    "confirm_api_cost": True,
+                },
+            )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertNotIn("session not owned", response.text)
+        service.chat.assert_not_awaited()
     def test_cost_confirmation_and_session_id_are_required_before_initialization(self) -> None:
         with patch("app.api.create_tutor_workflow_service") as create_service:
             with TestClient(app) as client:
@@ -185,7 +216,6 @@ class TutorAPITests(unittest.TestCase):
         )
         request = {
             "message": "解释 RAG",
-            "user_id": USER_ID,
             "session_id": SESSION_ID,
             "confirm_api_cost": True,
         }
@@ -221,7 +251,6 @@ class TutorAPITests(unittest.TestCase):
         )
         request = {
             "message": "解释 RAG",
-            "user_id": USER_ID,
             "session_id": SESSION_ID,
             "confirm_api_cost": True,
         }
@@ -246,7 +275,6 @@ class TutorAPITests(unittest.TestCase):
                 "/api/tutor/chat",
                 json={
                     "message": "private-question",
-                    "user_id": USER_ID,
                     "session_id": SESSION_ID,
                     "confirm_api_cost": True,
                 },
@@ -267,20 +295,20 @@ class TutorAPITests(unittest.TestCase):
 
     def test_rag_invalidation_also_invalidates_tutor(self) -> None:
         rag_service = Mock(spec=RAGService)
-        app.state.rag_service = rag_service
-        app.state.tutor_service = self.make_service()
+        app.state.rag_services[USER_ID] = rag_service
+        app.state.tutor_services[USER_ID] = self.make_service()
 
-        invalidate_rag_service(app)
+        invalidate_rag_service(app, USER_ID)
 
         rag_service.close.assert_called_once_with()
-        self.assertIsNone(app.state.rag_service)
-        self.assertIsNone(app.state.tutor_service)
+        self.assertNotIn(USER_ID, app.state.rag_services)
+        self.assertNotIn(USER_ID, app.state.tutor_services)
 
     def test_tutor_service_is_reused_with_current_rag_service(self) -> None:
         rag_service = Mock(spec=RAGService)
         tutor_service = self.make_service()
         tutor_service.chat.return_value = tutor_result()
-        app.state.rag_service = rag_service
+        app.state.rag_services[USER_ID] = rag_service
 
         learning_store = object()
         with patch(
@@ -293,7 +321,6 @@ class TutorAPITests(unittest.TestCase):
             with TestClient(app) as client:
                 request = {
                     "message": "解释 Embedding",
-                    "user_id": USER_ID,
                     "session_id": SESSION_ID,
                     "confirm_api_cost": True,
                 }
@@ -305,7 +332,7 @@ class TutorAPITests(unittest.TestCase):
         create.assert_called_once_with(rag_service, learning_store)
         self.assertEqual(tutor_service.chat.await_count, 2)
         rag_service.close.assert_called_once_with()
-        self.assertIsNone(app.state.tutor_service)
+        self.assertNotIn(USER_ID, app.state.tutor_services)
 
 
 if __name__ == "__main__":

@@ -26,7 +26,7 @@ from app.operation_guard import OperationGuard, OperationProtectionError
 DOCUMENT_JOB_DB_PATH = (
     Path(__file__).resolve().parents[1] / "data" / "jobs" / "document_jobs.sqlite3"
 )
-DOCUMENT_JOB_SCHEMA_VERSION = 1
+DOCUMENT_JOB_SCHEMA_VERSION = 2
 MAX_JOB_ERROR_LENGTH = 500
 JobStatus = Literal["pending", "processing", "completed", "failed"]
 
@@ -47,6 +47,7 @@ class DocumentJobConflictError(DocumentJobError):
 class DocumentJobRecord:
     job_id: str
     upload_ids: tuple[str, ...]
+    user_id: str | None
     filenames: tuple[str, ...]
     status: JobStatus
     progress: int
@@ -100,6 +101,29 @@ INSERT OR IGNORE INTO schema_migrations(version) VALUES (1);
 COMMIT;
 """
 
+MIGRATION_2 = """
+BEGIN IMMEDIATE;
+
+ALTER TABLE document_jobs ADD COLUMN user_id TEXT;
+
+UPDATE document_jobs
+SET status = 'failed',
+    error_message = '旧版任务没有用户归属，请重新提交任务。',
+    finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE user_id IS NULL AND status IN ('pending', 'processing');
+
+DROP INDEX idx_document_jobs_active_request;
+CREATE UNIQUE INDEX idx_document_jobs_active_user_request
+    ON document_jobs(user_id, request_key)
+    WHERE user_id IS NOT NULL AND status IN ('pending', 'processing');
+CREATE INDEX idx_document_jobs_user_created
+    ON document_jobs(user_id, created_at DESC, job_id DESC);
+
+INSERT INTO schema_migrations(version) VALUES (2);
+COMMIT;
+"""
+
 
 def _canonical_job_id(value: str) -> str:
     try:
@@ -134,6 +158,7 @@ def _row_to_record(row: aiosqlite.Row) -> DocumentJobRecord:
         result = decoded
     return DocumentJobRecord(
         job_id=row["job_id"],
+        user_id=row["user_id"],
         upload_ids=_decode_string_tuple(row["upload_ids_json"]),
         filenames=_decode_string_tuple(row["filenames_json"]),
         status=row["status"],
@@ -200,6 +225,15 @@ class DocumentJobStore:
                 except Exception:
                     pass
                 raise
+        if current_version < 2:
+            try:
+                await connection.executescript(MIGRATION_2)
+            except Exception:
+                try:
+                    await connection.rollback()
+                except Exception:
+                    pass
+                raise
         await connection.commit()
 
     async def schema_version(self) -> int:
@@ -211,6 +245,7 @@ class DocumentJobStore:
 
     async def create_job(
         self,
+        user_id: str,
         upload_ids: Sequence[str],
         filenames: Sequence[str],
     ) -> DocumentJobRecord:
@@ -229,12 +264,14 @@ class DocumentJobStore:
                 await self._connection.execute(
                     """
                     INSERT INTO document_jobs(
-                        job_id, request_key, upload_ids_json, filenames_json,
+                        job_id, user_id, request_key,
+                        upload_ids_json, filenames_json,
                         status, progress
-                    ) VALUES (?, ?, ?, ?, 'pending', 0)
+                    ) VALUES (?, ?, ?, ?, ?, 'pending', 0)
                     """,
                     (
                         job_id,
+                        user_id,
                         request_key,
                         json.dumps(ids, ensure_ascii=False, separators=(",", ":")),
                         json.dumps(names, ensure_ascii=False, separators=(",", ":")),
@@ -249,14 +286,22 @@ class DocumentJobStore:
             except Exception:
                 await self._connection.rollback()
                 raise
-        return await self.get_job(job_id)
+        return await self.get_job(job_id, user_id=user_id)
 
-    async def get_job(self, job_id: str) -> DocumentJobRecord:
+    async def get_job(
+        self,
+        job_id: str,
+        *,
+        user_id: str | None = None,
+    ) -> DocumentJobRecord:
         normalized = _canonical_job_id(job_id)
-        cursor = await self._connection.execute(
-            "SELECT * FROM document_jobs WHERE job_id = ?",
-            (normalized,),
-        )
+        if user_id is None:
+            query = "SELECT * FROM document_jobs WHERE job_id = ?"
+            parameters = (normalized,)
+        else:
+            query = "SELECT * FROM document_jobs WHERE job_id = ? AND user_id = ?"
+            parameters = (normalized, user_id)
+        cursor = await self._connection.execute(query, parameters)
         row = await cursor.fetchone()
         if row is None:
             raise DocumentJobNotFoundError("文档处理任务不存在。")
@@ -286,7 +331,7 @@ class DocumentJobStore:
                 cursor = await self._connection.execute(
                     """
                     SELECT job_id FROM document_jobs
-                    WHERE status = 'pending'
+                    WHERE status = 'pending' AND user_id IS NOT NULL
                     ORDER BY created_at, job_id
                     LIMIT 1
                     """
@@ -399,12 +444,12 @@ class DocumentJobService:
         self,
         *,
         store: DocumentJobStore,
-        material_manager: MaterialManager,
+        material_manager_factory: Callable[[str], MaterialManager],
         operation_guard: OperationGuard,
-        invalidate_rag: Callable[[], None],
+        invalidate_rag: Callable[[str], None],
     ) -> None:
         self.store = store
-        self._material_manager = material_manager
+        self._material_manager_factory = material_manager_factory
         self._operation_guard = operation_guard
         self._invalidate_rag = invalidate_rag
         self._wake_event = asyncio.Event()
@@ -415,15 +460,15 @@ class DocumentJobService:
     async def open(
         cls,
         *,
-        material_manager: MaterialManager,
+        material_manager_factory: Callable[[str], MaterialManager],
         operation_guard: OperationGuard,
-        invalidate_rag: Callable[[], None],
+        invalidate_rag: Callable[[str], None],
         database_path: Path = DOCUMENT_JOB_DB_PATH,
     ) -> "DocumentJobService":
         store = await DocumentJobStore.open(database_path)
         service = cls(
             store=store,
-            material_manager=material_manager,
+            material_manager_factory=material_manager_factory,
             operation_guard=operation_guard,
             invalidate_rag=invalidate_rag,
         )
@@ -435,34 +480,42 @@ class DocumentJobService:
         service._wake_event.set()
         return service
 
-    async def enqueue(self, upload_ids: Sequence[str]) -> DocumentJobRecord:
+    async def enqueue(
+        self,
+        user_id: str,
+        upload_ids: Sequence[str],
+    ) -> DocumentJobRecord:
+        material_manager = self._material_manager_factory(user_id)
         ids = tuple(upload_ids)
         if not ids or len(set(ids)) != len(ids):
             raise ValueError("任务必须包含不重复的暂存上传 ID。")
         staged = await asyncio.gather(
             *(
-                asyncio.to_thread(self._material_manager.inspect_staged, upload_id)
+                asyncio.to_thread(material_manager.inspect_staged, upload_id)
                 for upload_id in ids
             )
         )
         names = tuple(item.filename for item in staged)
         if len({name.casefold() for name in names}) != len(names):
             raise ValueError("任务不能包含重复文件名。")
-        job = await self.store.create_job(ids, names)
+        job = await self.store.create_job(user_id, ids, names)
         self._wake_event.set()
         return job
 
-    async def get_job(self, job_id: str) -> DocumentJobRecord:
-        return await self.store.get_job(job_id)
+    async def get_job(self, user_id: str, job_id: str) -> DocumentJobRecord:
+        return await self.store.get_job(job_id, user_id=user_id)
 
     def _execute_job(self, job: DocumentJobRecord) -> dict[str, Any]:
+        if job.user_id is None:
+            raise DocumentJobError("旧版任务没有用户归属，不能执行。")
+        material_manager = self._material_manager_factory(job.user_id)
         with self._operation_guard.acquire("index") as lease:
             if len(job.upload_ids) == 1:
                 upload_id = job.upload_ids[0]
                 lease.reserve_units(
-                    self._material_manager.estimate_index_batches(upload_id)
+                    material_manager.estimate_index_batches(upload_id)
                 )
-                result: MaterialSyncResult = self._material_manager.commit_staged(
+                result: MaterialSyncResult = material_manager.commit_staged(
                     upload_id
                 )
                 return {
@@ -474,10 +527,10 @@ class DocumentJobService:
                 }
 
             lease.reserve_units(
-                self._material_manager.estimate_index_batches_batch(job.upload_ids)
+                material_manager.estimate_index_batches_batch(job.upload_ids)
             )
             batch_result: BatchMaterialSyncResult = (
-                self._material_manager.commit_staged_batch(job.upload_ids)
+                material_manager.commit_staged_batch(job.upload_ids)
             )
             return {
                 "filenames": list(batch_result.filenames),
@@ -492,10 +545,10 @@ class DocumentJobService:
             result = await asyncio.to_thread(self._execute_job, job)
         except Exception as error:
             if isinstance(error, MaterialRollbackError):
-                self._invalidate_rag()
+                self._invalidate_rag(job.user_id)
             await self.store.mark_failed(job.job_id, _safe_job_error(error))
             return
-        self._invalidate_rag()
+        self._invalidate_rag(job.user_id)
         await self.store.mark_completed(job.job_id, result)
 
     async def _worker_loop(self) -> None:

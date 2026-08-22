@@ -15,6 +15,7 @@ from app.api import (
 )
 from app.operation_guard import OperationGuard, OperationPolicy
 from app.request_history import RequestHistoryWriter
+from tests.auth_helpers import TEST_USER, clear_user_services, install_authenticated_user
 from app.study_workflow import (
     StudyWorkflowConflictError,
     StudyWorkflowNotFoundError,
@@ -56,6 +57,7 @@ class StudyWorkflowAPITests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         app.dependency_overrides.clear()
+        install_authenticated_user()
         app.state.rag_service = None
         app.state.agent_service = None
         app.state.study_workflow_service = None
@@ -66,6 +68,7 @@ class StudyWorkflowAPITests(unittest.TestCase):
 
     def tearDown(self) -> None:
         app.dependency_overrides.clear()
+        clear_user_services()
         app.state.rag_service = None
         app.state.agent_service = None
         app.state.study_workflow_service = None
@@ -110,8 +113,9 @@ class StudyWorkflowAPITests(unittest.TestCase):
         self.assertEqual(response.json()["sources"], ["[rag.md · 第 1 段]"])
         workflow_service.start.assert_awaited_once()
         call = workflow_service.start.await_args
-        UUID(call.args[0])
-        self.assertEqual(call.args[1], "学习 RAG")
+        self.assertEqual(call.args[0], TEST_USER.user_id)
+        UUID(call.args[1])
+        self.assertEqual(call.args[2], "学习 RAG")
         self.assertIs(call.kwargs["agent_service"], agent_service)
 
     def test_invalid_start_never_initializes_agent(self) -> None:
@@ -170,8 +174,11 @@ class StudyWorkflowAPITests(unittest.TestCase):
 
         self.assertEqual(confirmed.status_code, 200)
         self.assertEqual(progressed.status_code, 200)
-        workflow_service.confirm.assert_awaited_once_with(WORKFLOW_ID, "approve")
+        workflow_service.confirm.assert_awaited_once_with(
+            TEST_USER.user_id, WORKFLOW_ID, "approve"
+        )
         workflow_service.record_progress.assert_awaited_once_with(
+            TEST_USER.user_id,
             WORKFLOW_ID,
             "完成阅读",
             complete_current_task=True,
@@ -197,10 +204,13 @@ class StudyWorkflowAPITests(unittest.TestCase):
         self.assertEqual(rejected.status_code, 422)
         self.assertEqual(accepted.status_code, 200)
         workflow_service.retry.assert_awaited_once_with(
+            TEST_USER.user_id,
             WORKFLOW_ID,
             agent_service=agent_service,
         )
-        workflow_service.assert_retryable.assert_awaited_once_with(WORKFLOW_ID)
+        workflow_service.assert_retryable.assert_awaited_once_with(
+            TEST_USER.user_id, WORKFLOW_ID
+        )
 
     def test_non_retryable_workflow_never_initializes_agent(self) -> None:
         workflow_service = self.make_workflow_service()
@@ -299,7 +309,9 @@ class StudyWorkflowAPITests(unittest.TestCase):
             accepted.json(),
             {"workflow_id": WORKFLOW_ID, "status": "deleted"},
         )
-        workflow_service.delete.assert_awaited_once_with(WORKFLOW_ID)
+        workflow_service.delete.assert_awaited_once_with(
+            TEST_USER.user_id, WORKFLOW_ID
+        )
 
     def test_workflow_rate_limit_blocks_second_progress_update(self) -> None:
         workflow_service = self.make_workflow_service()

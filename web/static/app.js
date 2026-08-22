@@ -69,9 +69,27 @@ const refreshHistoryButton = document.querySelector("#refresh-history-button");
 const newSessionButton = document.querySelector("#new-session-button");
 const focusTriggers = Array.from(document.querySelectorAll("[data-focus-target]"));
 const tutorSuggestions = Array.from(document.querySelectorAll(".tutor-suggestion"));
+const navLoginLink = document.querySelector("#nav-login-link");
+const navUser = document.querySelector("#nav-user");
+const navUserName = document.querySelector("#nav-user-name");
+const logoutButton = document.querySelector("#logout-button");
+const authGate = document.querySelector("#auth-gate");
+const workspaceShell = document.querySelector("#workspace-shell");
+const loginTab = document.querySelector("#login-tab");
+const registerTab = document.querySelector("#register-tab");
+const loginForm = document.querySelector("#login-form");
+const registerForm = document.querySelector("#register-form");
+const loginEmail = document.querySelector("#login-email");
+const loginPassword = document.querySelector("#login-password");
+const loginButton = document.querySelector("#login-button");
+const registerName = document.querySelector("#register-name");
+const registerEmail = document.querySelector("#register-email");
+const registerPassword = document.querySelector("#register-password");
+const registerButton = document.querySelector("#register-button");
+const authMessage = document.querySelector("#auth-message");
+
 
 const STORAGE_KEYS = {
-  userId: "zhixing.user_id",
   sessionId: "zhixing.session_id",
   topic: "zhixing.topic",
 };
@@ -98,6 +116,7 @@ let materialRequestInProgress = false;
 let tutorRequestInProgress = false;
 let stagedUpload = null;
 let tutorIdentity = readTutorIdentity();
+let currentUser = null;
 
 function updateCharacterCount() {
   charCount.textContent = `${questionInput.value.length} / 2000`;
@@ -119,6 +138,184 @@ async function checkHealth() {
     setApiState("online", "本地 API 已连接，不代表模型已调用");
   } catch {
     setApiState("offline", "本地 API 暂不可用");
+  }
+}
+
+function showAuthMessage(message, state = "error") {
+  authMessage.textContent = message;
+  authMessage.dataset.state = state;
+  authMessage.hidden = !message;
+}
+
+function activateAuthMode(mode) {
+  const showRegister = mode === "register";
+  loginTab.setAttribute("aria-selected", String(!showRegister));
+  registerTab.setAttribute("aria-selected", String(showRegister));
+  loginForm.hidden = showRegister;
+  registerForm.hidden = !showRegister;
+  showAuthMessage("");
+  (showRegister ? registerName : loginEmail).focus();
+}
+
+function setAuthBusy(busy) {
+  loginButton.disabled = busy;
+  registerButton.disabled = busy;
+  loginTab.disabled = busy;
+  registerTab.disabled = busy;
+}
+
+function clearPrivateWorkspace() {
+  currentUser = null;
+  clearTutorSession();
+  tutorIdentity = readTutorIdentity();
+  materialList.replaceChildren();
+  materialCount.textContent = "0";
+  emptyMaterials.hidden = false;
+  clearOutput();
+  clearStagedMaterial();
+  materialMessage.hidden = true;
+}
+
+function showLoggedOut(message = "") {
+  clearPrivateWorkspace();
+  authGate.hidden = false;
+  workspaceShell.hidden = true;
+  navLoginLink.hidden = false;
+  navUser.hidden = true;
+  navUserName.textContent = "";
+  if (message) {
+    showAuthMessage(message, "error");
+  }
+}
+
+async function authenticatedFetch(input, init = {}) {
+  const response = await fetch(input, {
+    ...init,
+    credentials: "same-origin",
+  });
+  if (response.status === 401) {
+    showLoggedOut("登录状态已失效，请重新登录。");
+  }
+  return response;
+}
+
+async function loadUserSessions() {
+  const response = await authenticatedFetch("/api/sessions", {
+    headers: { Accept: "application/json" },
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (response.status !== 401) {
+      showTutorState("无法读取个人学习 Session。", "error");
+    }
+    return;
+  }
+  const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+  const storedSession = sessions.find(
+    (item) => String(item.session_id || "") === tutorIdentity.sessionId,
+  );
+  const selectedSession = storedSession || sessions[0];
+  if (!selectedSession) {
+    clearTutorSession();
+    return;
+  }
+  tutorIdentity.sessionId = String(selectedSession.session_id);
+  tutorIdentity.topic = String(selectedSession.topic || "未命名主题");
+  persistTutorIdentity();
+  setTutorSessionReady();
+  await loadLearningHistory();
+}
+
+async function enterAuthenticatedWorkspace(payload, { preserveSession = false } = {}) {
+  currentUser = payload;
+  if (!preserveSession) {
+    clearTutorSession();
+  }
+  const displayName = String(payload.display_name || payload.email || "学习者");
+  navUserName.textContent = displayName;
+  navLoginLink.hidden = true;
+  navUser.hidden = false;
+  authGate.hidden = true;
+  workspaceShell.hidden = false;
+  showAuthMessage("");
+  await Promise.all([loadMaterials(), loadUserSessions()]);
+}
+
+async function restoreAuthentication() {
+  try {
+    const response = await fetch("/api/auth/me", {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    });
+    if (response.status === 401) {
+      showLoggedOut();
+      return;
+    }
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.user_id) {
+      showLoggedOut("暂时无法确认登录状态，请稍后重试。");
+      return;
+    }
+    await enterAuthenticatedWorkspace(payload, { preserveSession: true });
+  } catch {
+    showLoggedOut("无法连接身份服务，请确认本地 API 仍在运行。");
+  }
+}
+
+async function submitAuthentication(mode) {
+  const isRegister = mode === "register";
+  const activeForm = isRegister ? registerForm : loginForm;
+  if (!activeForm.reportValidity()) {
+    return;
+  }
+  setAuthBusy(true);
+  showAuthMessage("");
+  const email = (isRegister ? registerEmail : loginEmail).value.trim();
+  const password = isRegister ? registerPassword.value : loginPassword.value;
+  const body = { email, password };
+  if (isRegister) {
+    body.display_name = registerName.value.trim();
+  }
+  try {
+    const response = await fetch(
+      isRegister ? "/api/auth/register" : "/api/auth/login",
+      {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      },
+    );
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const fallback = isRegister
+        ? "注册没有完成，请检查邮箱、称呼和密码。"
+        : "邮箱或密码错误。";
+      showAuthMessage(String(payload.detail || fallback), "error");
+      return;
+    }
+    activeForm.reset();
+    await enterAuthenticatedWorkspace(payload);
+  } catch {
+    showAuthMessage("无法连接身份服务，请确认本地 API 仍在运行。", "error");
+  } finally {
+    setAuthBusy(false);
+  }
+}
+
+async function logout() {
+  logoutButton.disabled = true;
+  try {
+    await authenticatedFetch("/api/auth/logout", { method: "POST" });
+  } catch {
+    // 即使本地服务暂不可用，也清理浏览器中的个人学习上下文。
+  } finally {
+    showLoggedOut();
+    activateAuthMode("login");
+    logoutButton.disabled = false;
   }
 }
 
@@ -317,7 +514,7 @@ function safeExternalHttpUrl(value) {
 
 async function loadMaterials() {
   try {
-    const response = await fetch("/api/materials", {
+    const response = await authenticatedFetch("/api/materials", {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) {
@@ -374,7 +571,7 @@ async function stageMaterial() {
   body.append("operation", uploadOperation.value);
   stageButton.textContent = "正在处理资料…";
   try {
-    const response = await fetch("/api/materials/stage-batch", {
+    const response = await authenticatedFetch("/api/materials/stage-batch", {
       method: "POST",
       headers: { Accept: "application/json" },
       body,
@@ -431,7 +628,7 @@ async function previewWebMaterial() {
   materialMessage.hidden = true;
   clearStagedMaterial();
   try {
-    const response = await fetch("/api/web-materials/preview", {
+    const response = await authenticatedFetch("/api/web-materials/preview", {
       method: "POST",
       headers: {
         Accept: "application/json",
@@ -500,7 +697,7 @@ async function confirmIndex() {
           confirm_api_cost: true,
         }
       : { confirm_api_cost: true };
-    const response = await fetch(target, {
+    const response = await authenticatedFetch(target, {
       method: "POST",
       headers: {
         Accept: "application/json",
@@ -563,7 +760,7 @@ async function confirmIndex() {
 async function waitForDocumentJob(jobId) {
   while (true) {
     await new Promise((resolve) => window.setTimeout(resolve, 1000));
-    const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, {
+    const response = await authenticatedFetch(`/api/jobs/${encodeURIComponent(jobId)}`, {
       headers: { Accept: "application/json" },
     });
     const payload = await response.json().catch(() => ({}));
@@ -593,7 +790,7 @@ async function deleteMaterial(filename, button) {
   setMaterialBusy(true);
   button.disabled = true;
   try {
-    const response = await fetch(`/api/materials/${encodeURIComponent(filename)}`, {
+    const response = await authenticatedFetch(`/api/materials/${encodeURIComponent(filename)}`, {
       method: "DELETE",
       headers: {
         Accept: "application/json",
@@ -718,7 +915,7 @@ async function submitQuestion() {
   buttonLabel.textContent = "正在检索与回答…";
 
   try {
-    const response = await fetch("/api/ask", {
+    const response = await authenticatedFetch("/api/ask", {
       method: "POST",
       headers: {
         Accept: "application/json",
@@ -788,16 +985,12 @@ function safeStorageRemove(key) {
 
 function readTutorIdentity() {
   return {
-    userId: safeStorageGet(STORAGE_KEYS.userId),
     sessionId: safeStorageGet(STORAGE_KEYS.sessionId),
     topic: safeStorageGet(STORAGE_KEYS.topic),
   };
 }
 
 function persistTutorIdentity() {
-  if (tutorIdentity.userId) {
-    safeStorageSet(STORAGE_KEYS.userId, tutorIdentity.userId);
-  }
   if (tutorIdentity.sessionId) {
     safeStorageSet(STORAGE_KEYS.sessionId, tutorIdentity.sessionId);
   }
@@ -830,25 +1023,8 @@ function setTutorSessionReady() {
   newSessionButton.hidden = false;
 }
 
-async function ensureTutorUser() {
-  if (tutorIdentity.userId) {
-    return tutorIdentity.userId;
-  }
-  const response = await fetch("/api/users", {
-    method: "POST",
-    headers: { Accept: "application/json" },
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok || !payload.user_id) {
-    throw new Error("无法创建本地学习身份。");
-  }
-  tutorIdentity.userId = String(payload.user_id);
-  safeStorageSet(STORAGE_KEYS.userId, tutorIdentity.userId);
-  return tutorIdentity.userId;
-}
-
 async function createTutorSession(topic) {
-  if (tutorRequestInProgress) {
+  if (tutorRequestInProgress || !currentUser) {
     return;
   }
   tutorRequestInProgress = true;
@@ -856,8 +1032,7 @@ async function createTutorSession(topic) {
   tutorSessionButton.textContent = "正在建立学习空间…";
   tutorMessageState.hidden = true;
   try {
-    const userId = await ensureTutorUser();
-    const response = await fetch(`/api/users/${encodeURIComponent(userId)}/sessions`, {
+    const response = await authenticatedFetch("/api/sessions", {
       method: "POST",
       headers: {
         Accept: "application/json",
@@ -870,7 +1045,6 @@ async function createTutorSession(topic) {
       throw new Error("无法创建学习 Session。");
     }
     tutorIdentity = {
-      userId,
       sessionId: String(payload.session_id),
       topic: String(payload.topic || topic),
     };
@@ -1031,14 +1205,14 @@ function renderTutorHistory(messages) {
 }
 
 async function loadLearningHistory({ renderThread = true } = {}) {
-  if (!tutorIdentity.userId || !tutorIdentity.sessionId) {
+  if (!currentUser || !tutorIdentity.sessionId) {
     renderLearningHistory([]);
     return;
   }
   refreshHistoryButton.disabled = true;
   try {
-    const target = `/api/users/${encodeURIComponent(tutorIdentity.userId)}/history?session_id=${encodeURIComponent(tutorIdentity.sessionId)}`;
-    const response = await fetch(target, {
+    const target = `/api/history?session_id=${encodeURIComponent(tutorIdentity.sessionId)}`;
+    const response = await authenticatedFetch(target, {
       headers: { Accept: "application/json" },
     });
     const payload = await response.json().catch(() => ({}));
@@ -1064,7 +1238,7 @@ async function loadLearningHistory({ renderThread = true } = {}) {
 
 async function submitTutorMessage() {
   const message = tutorMessageInput.value.trim();
-  if (!tutorIdentity.userId || !tutorIdentity.sessionId) {
+  if (!currentUser || !tutorIdentity.sessionId) {
     clearTutorSession();
     showTutorState("请先创建一个学习主题。", "error");
     tutorTopicInput.focus();
@@ -1090,14 +1264,13 @@ async function submitTutorMessage() {
   tutorMessageState.hidden = true;
 
   try {
-    const response = await fetch("/api/tutor/chat", {
+    const response = await authenticatedFetch("/api/tutor/chat", {
       method: "POST",
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        user_id: tutorIdentity.userId,
         session_id: tutorIdentity.sessionId,
         message,
         confirm_api_cost: true,
@@ -1130,15 +1303,6 @@ async function submitTutorMessage() {
     tutorRequestInProgress = false;
     tutorSubmit.disabled = false;
     tutorSubmit.textContent = "发送给 AI Tutor";
-  }
-}
-
-function initializeTutor() {
-  if (tutorIdentity.sessionId && tutorIdentity.userId) {
-    setTutorSessionReady();
-    void loadLearningHistory();
-  } else {
-    clearTutorSession();
   }
 }
 
@@ -1176,6 +1340,11 @@ function initializeRevealAnimations() {
 }
 
 function focusLearningTarget(trigger) {
+  if (!currentUser) {
+    document.querySelector("#learn").scrollIntoView({ behavior: "smooth" });
+    window.setTimeout(() => loginEmail.focus(), 420);
+    return;
+  }
   const targetSelector = trigger.dataset.focusTarget;
   const target = targetSelector ? document.querySelector(targetSelector) : null;
   if (!target) {
@@ -1193,6 +1362,11 @@ function focusLearningTarget(trigger) {
 function openTutorSuggestion(trigger) {
   const prompt = String(trigger.dataset.tutorPrompt || "").trim();
   const topic = String(trigger.dataset.topic || "").trim();
+  if (!currentUser) {
+    document.querySelector("#learn").scrollIntoView({ behavior: "smooth" });
+    window.setTimeout(() => loginEmail.focus(), 420);
+    return;
+  }
   activateMode("tutor");
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   document.querySelector("#learn").scrollIntoView({
@@ -1200,7 +1374,7 @@ function openTutorSuggestion(trigger) {
     block: "start",
   });
 
-  if (tutorIdentity.sessionId && tutorIdentity.userId) {
+  if (tutorIdentity.sessionId) {
     tutorMessageInput.value = prompt;
     window.setTimeout(() => tutorMessageInput.focus(), reduceMotion ? 0 : 420);
     return;
@@ -1211,6 +1385,24 @@ function openTutorSuggestion(trigger) {
   }
   window.setTimeout(() => tutorTopicInput.focus(), reduceMotion ? 0 : 420);
 }
+
+loginTab.addEventListener("click", () => {
+  activateAuthMode("login");
+});
+registerTab.addEventListener("click", () => {
+  activateAuthMode("register");
+});
+loginForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void submitAuthentication("login");
+});
+registerForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void submitAuthentication("register");
+});
+logoutButton.addEventListener("click", () => {
+  void logout();
+});
 
 questionInput.addEventListener("input", updateCharacterCount);
 questionInput.addEventListener("keydown", (event) => {
@@ -1288,6 +1480,5 @@ for (const trigger of tutorSuggestions) {
 
 initializeRevealAnimations();
 updateCharacterCount();
-initializeTutor();
 void checkHealth();
-void loadMaterials();
+void restoreAuthentication();

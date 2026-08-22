@@ -7,6 +7,7 @@ from unittest.mock import Mock
 from app.document_jobs import (
     DOCUMENT_JOB_SCHEMA_VERSION,
     DocumentJobConflictError,
+    DocumentJobNotFoundError,
     DocumentJobService,
     DocumentJobStore,
 )
@@ -18,6 +19,10 @@ from app.material_ingestion import (
     StagedMaterial,
 )
 from app.operation_guard import OperationGuard
+
+
+USER_ID = "11111111-1111-4111-8111-111111111111"
+OTHER_USER_ID = "22222222-2222-4222-8222-222222222222"
 
 
 def staged(upload_id: str, filename: str) -> StagedMaterial:
@@ -45,7 +50,7 @@ class DocumentJobStoreTests(unittest.IsolatedAsyncioTestCase):
         self.temporary_directory.cleanup()
 
     async def test_create_job_has_persistent_pending_state_and_timestamps(self) -> None:
-        created = await self.store.create_job(("a" * 32,), ("notes.md",))
+        created = await self.store.create_job(USER_ID, ("a" * 32,), ("notes.md",))
         loaded = await self.store.get_job(created.job_id)
 
         self.assertEqual(await self.store.schema_version(), DOCUMENT_JOB_SCHEMA_VERSION)
@@ -56,20 +61,31 @@ class DocumentJobStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(loaded.started_at)
         self.assertIsNone(loaded.finished_at)
 
+    async def test_job_lookup_is_scoped_to_its_owner(self) -> None:
+        created = await self.store.create_job(USER_ID, ("a" * 32,), ("notes.md",))
+
+        with self.assertRaises(DocumentJobNotFoundError):
+            await self.store.get_job(created.job_id, user_id=OTHER_USER_ID)
+
+        owned = await self.store.get_job(created.job_id, user_id=USER_ID)
+        self.assertEqual(owned.user_id, USER_ID)
+
     async def test_rejects_duplicate_active_job_for_same_uploads(self) -> None:
         await self.store.create_job(
+            USER_ID,
             ("a" * 32, "b" * 32),
             ("notes.md", "chapter.pdf"),
         )
 
         with self.assertRaises(DocumentJobConflictError):
             await self.store.create_job(
+                USER_ID,
                 ("b" * 32, "a" * 32),
                 ("chapter.pdf", "notes.md"),
             )
 
     async def test_recovery_marks_interrupted_processing_as_failed(self) -> None:
-        created = await self.store.create_job(("a" * 32,), ("notes.md",))
+        created = await self.store.create_job(USER_ID, ("a" * 32,), ("notes.md",))
         claimed = await self.store.claim_next_pending()
         self.assertEqual(claimed.status, "processing")
         await self.store.close()
@@ -91,7 +107,7 @@ class DocumentJobServiceTests(unittest.IsolatedAsyncioTestCase):
         self.manager = Mock(spec=MaterialManager)
         self.invalidated = Mock()
         self.service = await DocumentJobService.open(
-            material_manager=self.manager,
+            material_manager_factory=lambda user_id: self.manager,
             operation_guard=OperationGuard(),
             invalidate_rag=self.invalidated,
             database_path=self.database_path,
@@ -103,7 +119,7 @@ class DocumentJobServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def wait_finished(self, job_id: str):
         for _ in range(100):
-            job = await self.service.get_job(job_id)
+            job = await self.service.get_job(USER_ID, job_id)
             if job.status in {"completed", "failed"}:
                 return job
             await asyncio.sleep(0.01)
@@ -122,7 +138,7 @@ class DocumentJobServiceTests(unittest.IsolatedAsyncioTestCase):
             cleanup_pending=False,
         )
 
-        created = await self.service.enqueue((upload_id,))
+        created = await self.service.enqueue(USER_ID, (upload_id,))
         finished = await self.wait_finished(created.job_id)
 
         self.assertEqual(finished.status, "completed")
@@ -132,7 +148,7 @@ class DocumentJobServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(finished.finished_at)
         self.manager.estimate_index_batches.assert_called_once_with(upload_id)
         self.manager.commit_staged.assert_called_once_with(upload_id)
-        self.invalidated.assert_called_once_with()
+        self.invalidated.assert_called_once_with(USER_ID)
 
     async def test_worker_records_safe_failure_and_never_leaves_processing(self) -> None:
         upload_id = "a" * 32
@@ -141,7 +157,7 @@ class DocumentJobServiceTests(unittest.IsolatedAsyncioTestCase):
             "现有索引处于只读兼容性保护；未调用 Embedding。"
         )
 
-        created = await self.service.enqueue((upload_id,))
+        created = await self.service.enqueue(USER_ID, (upload_id,))
         finished = await self.wait_finished(created.job_id)
 
         self.assertEqual(finished.status, "failed")
@@ -165,7 +181,7 @@ class DocumentJobServiceTests(unittest.IsolatedAsyncioTestCase):
             cleanup_pending=False,
         )
 
-        created = await self.service.enqueue(upload_ids)
+        created = await self.service.enqueue(USER_ID, upload_ids)
         finished = await self.wait_finished(created.job_id)
 
         self.assertEqual(finished.status, "completed")
@@ -177,7 +193,7 @@ class DocumentJobServiceTests(unittest.IsolatedAsyncioTestCase):
         upload_id = "a" * 32
         await self.service.close()
         store = await DocumentJobStore.open(self.database_path)
-        pending = await store.create_job((upload_id,), ("notes.md",))
+        pending = await store.create_job(USER_ID, (upload_id,), ("notes.md",))
         await store.close()
         self.manager.estimate_index_batches.return_value = 1
         self.manager.commit_staged.return_value = MaterialSyncResult(
@@ -190,7 +206,7 @@ class DocumentJobServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.service = await DocumentJobService.open(
-            material_manager=self.manager,
+            material_manager_factory=lambda user_id: self.manager,
             operation_guard=OperationGuard(),
             invalidate_rag=self.invalidated,
             database_path=self.database_path,

@@ -1,6 +1,7 @@
 """构造并管理可由 CLI 与 API 复用的 LangChain RAG 服务。"""
 
 import logging
+from pathlib import Path
 from dataclasses import dataclass, field
 
 from langchain_chroma import Chroma
@@ -102,20 +103,22 @@ class RAGService:
         self._closed = True
 
 
-def create_rag_service() -> RAGService:
+def create_rag_service(
+    persist_directory: Path = VECTOR_STORE_DIR,
+) -> RAGService:
     """从环境配置和本地 Chroma 索引构造正式 RAG 服务。"""
     vector_store = None
     try:
         embedding_config = EmbeddingConfig.from_environment()
         embeddings = create_langchain_embeddings(embedding_config)
-        vector_store = open_vector_store(embeddings)
+        vector_store = open_vector_store(embeddings, persist_directory)
         has_records = bool(vector_store.get(limit=1)["ids"])
         if not has_records:
             raise RAGServiceInitializationError(
                 "向量库中没有资料，请先运行 app.index_langchain 建立索引。"
             )
         index_status = check_index_compatibility(
-            VECTOR_STORE_DIR,
+            persist_directory,
             runtime_index_config(embedding_config),
             has_records=has_records,
             access="read",

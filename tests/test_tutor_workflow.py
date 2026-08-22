@@ -74,6 +74,7 @@ class FakeLearningStore:
         self.topic = str(values["topic"])
         intent = str(values["intent"])
         session_id = str(values["session_id"])
+        user_id = str(values["user_id"])
         for role, content_key in (
             ("user", "user_content"),
             ("tutor", "tutor_content"),
@@ -82,6 +83,7 @@ class FakeLearningStore:
                 ConversationMessageRecord(
                     message_id=str(uuid4()),
                     session_id=session_id,
+                    user_id=user_id,
                     role=role,
                     content=str(values[content_key]),
                     intent=intent,

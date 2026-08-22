@@ -12,7 +12,7 @@
     <link rel="icon" href="data:,">
     <link rel="preload" href="/static/zhixing-hero.png" as="image" fetchpriority="high">
     <link rel="preload" href="/static/zhixing-study-objects.png" as="image">
-    <link rel="stylesheet" href="/static/styles.css?v=20260822-5">
+    <link rel="stylesheet" href="/static/styles.css?v=20260822-6">
   </head>
   <body>
     <a class="skip-link" href="#learn">跳到学习空间</a>
@@ -31,7 +31,11 @@
           <a href="#capabilities">学习方式</a>
           <a href="#trust">为什么可信</a>
         </div>
-        <a class="nav-cta" href="#learn">开始学习</a>
+        <a class="nav-cta" id="nav-login-link" href="#learn">登录学习</a>
+        <div class="nav-user" id="nav-user" hidden>
+          <span>你好，<strong id="nav-user-name"></strong></span>
+          <button id="logout-button" type="button">退出</button>
+        </div>
       </nav>
     </header>
 
@@ -182,7 +186,43 @@
           </div>
         </div>
 
-        <div class="workspace-shell" data-reveal>
+        <section class="auth-gate section-shell" id="auth-gate" aria-labelledby="auth-title">
+          <div class="auth-context">
+            <span>PERSONAL LEARNING SPACE</span>
+            <h3 id="auth-title">先确认是谁在学习。</h3>
+            <p>登录不是为了增加步骤，而是为了让资料、Citation、Tutor 对话和学习记录只属于你。</p>
+            <ul>
+              <li>每位用户拥有独立资料与向量索引</li>
+              <li>Session、对话和学习记录按身份读取</li>
+              <li>后端只信任验证后的登录状态</li>
+            </ul>
+          </div>
+          <div class="auth-card">
+            <div class="auth-tabs" role="tablist" aria-label="账户操作">
+              <button id="login-tab" type="button" role="tab" aria-selected="true" aria-controls="login-form">登录</button>
+              <button id="register-tab" type="button" role="tab" aria-selected="false" aria-controls="register-form">注册</button>
+            </div>
+            <form id="login-form" class="auth-form" novalidate>
+              <label for="login-email">邮箱</label>
+              <input id="login-email" name="email" type="email" maxlength="254" autocomplete="email" required>
+              <label for="login-password">密码</label>
+              <input id="login-password" name="password" type="password" maxlength="128" autocomplete="current-password" required>
+              <button id="login-button" type="submit">进入我的学习空间</button>
+            </form>
+            <form id="register-form" class="auth-form" novalidate hidden>
+              <label for="register-name">怎么称呼你</label>
+              <input id="register-name" name="display_name" maxlength="80" autocomplete="name" required>
+              <label for="register-email">邮箱</label>
+              <input id="register-email" name="email" type="email" maxlength="254" autocomplete="email" required>
+              <label for="register-password">密码</label>
+              <input id="register-password" name="password" type="password" minlength="10" maxlength="128" autocomplete="new-password" required>
+              <p class="field-note">至少 10 个字符。密码只以安全哈希保存。</p>
+              <button id="register-button" type="submit">创建个人学习空间</button>
+            </form>
+            <div class="auth-message" id="auth-message" role="alert" hidden></div>
+          </div>
+        </section>
+        <div class="workspace-shell" id="workspace-shell" data-reveal hidden>
           <aside class="materials-column" aria-labelledby="materials-title">
             <header class="workspace-column-heading">
               <div>
@@ -345,7 +385,7 @@
               <section class="tutor-setup" id="tutor-setup">
                 <span>建立真实学习 Session</span>
                 <h3>你现在想学习什么？</h3>
-                <p>知行会在本地创建学习身份和 Session，不保存密码或邮箱。</p>
+                <p>这个 Session 会绑定当前账户，并作为 Tutor 记忆与学习记录的边界。</p>
                 <form id="tutor-session-form">
                   <label for="tutor-topic">学习主题</label>
                   <input id="tutor-topic" name="topic" maxlength="200" placeholder="例如：理解 Embedding" required>
@@ -422,6 +462,6 @@
       <a href="/docs" target="_blank" rel="noreferrer">查看 API 文档</a>
     </footer>
 
-    <script src="/static/app.js?v=20260822-4" defer></script>
+    <script src="/static/app.js?v=20260822-5" defer></script>
   </body>
 </html>

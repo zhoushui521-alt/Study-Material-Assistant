@@ -67,6 +67,7 @@ class LearningDataStoreTests(unittest.IsolatedAsyncioTestCase):
             user.user_id,
             session.session_id,
         )
+        self.assertTrue(all(item.user_id == user.user_id for item in messages))
         records = await self.store.list_learning_records(user.user_id)
         updated_session = await self.store.get_session(
             user.user_id,
@@ -115,7 +116,7 @@ class LearningDataStoreTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(messages), 2)
         self.assertEqual(len(records), 1)
-        self.assertEqual(await self.store.schema_version(), 1)
+        self.assertEqual(await self.store.schema_version(), LEARNING_SCHEMA_VERSION)
 
 
 if __name__ == "__main__":

@@ -21,12 +21,14 @@ from app.api import (
 from app.operation_guard import OperationGuard, OperationPolicy
 from app.rag_service import RAGService
 from app.request_history import RequestHistoryWriter
+from tests.auth_helpers import TEST_USER, clear_user_services, install_authenticated_user
 
 
 class AgentAPITests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         app.dependency_overrides.clear()
+        install_authenticated_user()
         app.state.rag_service = None
         app.state.agent_service = None
         app.state.operation_guard = OperationGuard()
@@ -36,6 +38,7 @@ class AgentAPITests(unittest.TestCase):
 
     def tearDown(self) -> None:
         app.dependency_overrides.clear()
+        clear_user_services()
         app.state.rag_service = None
         app.state.agent_service = None
         self.temporary_directory.cleanup()
@@ -210,7 +213,7 @@ class AgentAPITests(unittest.TestCase):
             sources=(),
             tools_used=(),
         )
-        app.state.rag_service = rag_service
+        app.state.rag_services[TEST_USER.user_id] = rag_service
 
         with patch("app.api.create_agent_service", return_value=agent_service) as create:
             with TestClient(app) as client:
@@ -228,18 +231,18 @@ class AgentAPITests(unittest.TestCase):
         create.assert_called_once()
         self.assertIs(create.call_args.args[0], rag_service)
         rag_service.close.assert_called_once_with()
-        self.assertIsNone(app.state.agent_service)
+        self.assertNotIn(TEST_USER.user_id, app.state.agent_services)
 
     def test_rag_invalidation_also_invalidates_agent(self) -> None:
         rag_service = Mock(spec=RAGService)
-        app.state.rag_service = rag_service
-        app.state.agent_service = self.make_service()
+        app.state.rag_services[TEST_USER.user_id] = rag_service
+        app.state.agent_services[TEST_USER.user_id] = self.make_service()
 
-        invalidate_rag_service(app)
+        invalidate_rag_service(app, TEST_USER.user_id)
 
         rag_service.close.assert_called_once_with()
-        self.assertIsNone(app.state.rag_service)
-        self.assertIsNone(app.state.agent_service)
+        self.assertNotIn(TEST_USER.user_id, app.state.rag_services)
+        self.assertNotIn(TEST_USER.user_id, app.state.agent_services)
 
 
 if __name__ == "__main__":

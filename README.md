@@ -31,8 +31,10 @@ Agent 通过三个固定工具动态选择资料问答、资料列表或公开�
 进度和复盘；阶段 6 Agent 只作为受控的资料证据节点，不拥有整个流程控制权。
 V2 Stage 4 在不改动上述旧接口的前提下新增单 Tutor workflow：确定性识别问答、解释、
 练习、总结和学习规划，通过三个受控 Tool 复用现有 RAG、生成结构化练习或总结，并只在
-当前推理中保留有限短期状态。V2 Stage 5.1 进一步增加本地用户身份、学习 Session、
-完整 Tutor 对话与学习行为记录，并用 SQLite checkpoint 支持服务重启后继续学习。
+当前推理中保留有限短期状态。后续持久化阶段增加 SQLite 用户、学习 Session、完整 Tutor
+对话、学习行为与异步文档任务；当前 Stage 5.1 再用邮箱密码、可撤销服务端 Session、
+`current_user` 和每用户独立资料/Chroma 工作区建立可信身份与数据隔离。前端不再提交
+可伪造的 `user_id`。
 
 上传、网页预览、替换、删除、回滚、日志轮转、报告对比和阶段 3 保护已经通过 Fake/Mock 自动
 测试。用户随后在本地页面完成了一次真实 PDF 上传、费用确认、增量索引和问答：索引
@@ -352,6 +354,13 @@ python -m uvicorn app.api:app --host 127.0.0.1 --port 8000 --no-access-log
   `/health`，不会自动发起问答；
 - `GET http://127.0.0.1:8000/health`：只检查 API 进程是否响应，不读取模型配置、
   不打开 Chroma，也不调用 Embedding 或 Chat API；
+- `POST /api/auth/register`：提交 `email`、至少 10 字符的 `password` 与
+  `display_name`；密码只以 scrypt 哈希保存，成功后设置 HttpOnly 登录 Cookie；
+- `POST /api/auth/login`、`POST /api/auth/logout`、`GET /api/auth/me`：登录、撤销当前
+  服务端 Session 与读取当前身份；
+- 下述业务接口都要求同源登录 Cookie 或有效 `Authorization: Bearer <token>`；用户归属
+  只取后端验证后的 `current_user`，不接受客户端 `user_id` 作为身份来源；
+
 - `POST http://127.0.0.1:8000/api/ask`：请求体为
   `{"question": "RAG 为什么需要切分资料？"}`，返回 `answer` 和 `sources`；
 - `POST http://127.0.0.1:8000/api/agent`：请求体必须包含
@@ -359,15 +368,12 @@ python -m uvicorn app.api:app --host 127.0.0.1 --port 8000 --no-access-log
   `"allow_web_preview": true` 只授权本次请求预览用户明确提供的公开 URL；返回
   `answer`、`sources` 和 `tools_used`；
 - `POST http://127.0.0.1:8000/api/tutor/chat`：请求体为
-  `{"message": "帮我出题练习 Embedding", "user_id": "<UUID>",
-  "session_id": "<UUID>", "confirm_api_cost": true}`；`user_id` 和 `session_id`
-  必须先通过下述用户与 Session API 创建；返回 Tutor 意图、学习动作、
+  `{"message": "帮我出题练习 Embedding", "session_id": "<UUID>",
+  "confirm_api_cost": true}`；Session 必须属于当前登录用户；返回 Tutor 意图、学习动作、
   Evidence/Citation、可选练习或总结，并持久化成功的对话与学习行为；
-- `POST http://127.0.0.1:8000/api/users`：创建只包含服务端 UUID 和 UTC 创建时间的
-  本地用户身份，不接收密码、邮箱或权限字段；`GET /api/users/{user_id}` 查询用户；
-- `POST /api/users/{user_id}/sessions`：请求体为 `{"topic": "Embedding"}`，创建学习
-  Session；`GET /api/users/{user_id}/sessions` 最多返回最近 100 个 Session；
-- `GET /api/users/{user_id}/history`：最多返回最近 100 条 Tutor 消息和 100 条学习记录；
+- `POST /api/sessions`：请求体为 `{"topic": "Embedding"}`，为当前用户创建 Session；
+  `GET /api/sessions` 最多返回当前用户最近 100 个 Session；
+- `GET /api/history`：最多返回当前用户最近 100 条 Tutor 消息和 100 条学习记录；
   可用 `session_id=<UUID>` 查询参数限定到属于该用户的 Session；
 - `POST http://127.0.0.1:8000/api/study-workflows`：请求体为
   `{"goal": "理解 RAG 的证据约束", "confirm_api_cost": true}`；调用一次受限 Agent
@@ -448,7 +454,7 @@ Stage 5.1 的持久化数据层替代。旧 `/api/ask`、`/api/agent` 和
 新主题 Summary 会在此基础上增加一次结构化 Chat 调用；Session Summary 只执行一次
 结构化 Chat 调用。完整边界和验证证据见 `docs/stage4-completion-report.md`。
 
-## V2 Stage 5.1：User System & Persistent Learning Data
+## 历史 checkpoint：Persistent Learning Data Foundation（stage5-part1）
 
 `app/learning_data.py` 使用 SQLite、`aiosqlite` 和显式 SQL 管理 `users`、
 `learning_sessions`、`conversation_messages`、`learning_records` 与
@@ -466,9 +472,9 @@ Tutor 不把长期学习历史拼进 Prompt，也不把 LangGraph State 当作�
 本阶段选择 SQLite 是因为当前仍是本地单实例原型，并且仓库已经锁定
 `aiosqlite` 与 `langgraph-checkpoint-sqlite`；没有真实并发或部署证据支持立即引入
 PostgreSQL、连接池和新迁移框架。当前只建立基于 UUID 和外键查询的用户数据分区，
-没有认证授权；知道其他用户 UUID 的调用者仍可能访问其数据，因此不能作为公网多用户
-安全边界。数据库也未加密，不应保存密码、令牌或其他敏感凭据。完整设计与验证证据见
-`docs/stage5-1-completion-report.md`。
+当时尚无认证授权；这份历史边界由当前 Stage 5.1 身份与隔离阶段补齐。原始设计证据保留在
+`docs/stage5-1-completion-report.md`，没有被新报告覆盖。
+
 
 ## V2 Stage 5.2：Async Document Processing Pipeline
 
@@ -485,6 +491,26 @@ Job 支持 `pending`、`processing`、`completed`、`failed` 四种状态。进�
 不会假装仍在执行，也不会在外部调用结果不确定时自动重复付费。当前进度是
 `0 / 10 / 100` 的阶段信号，不是 Embedding 百分比。完整设计、验证证据和边界见
 `docs/stage5-2-completion-report.md`。
+
+## V2 Stage 5.1：User Identity & Data Isolation（stage5-part3）
+
+当前身份系统使用 SQLite 保存用户与可撤销服务端 Session：密码通过标准库 scrypt 加盐
+哈希，浏览器只持有 HttpOnly、SameSite=Strict Cookie，数据库只保存令牌 SHA-256。相比
+JWT，这更适合当前同源原生前端与本地单实例 FastAPI：退出可立即撤销，不需要密钥轮换和
+JWT 黑名单；代价是后续多实例部署需要共享 Session Store。
+
+所有资料、RAG、Agent、Tutor、Session、历史、文档 Job 与 Study Workflow 请求都从
+后端 `current_user` 取得身份。每个用户拥有
+`data/user_workspaces/<user_uuid>/{documents,pending_uploads,pending_deletions,vector_store}`；
+RAG、Citation 和 Agent 只打开该用户 Chroma，因此另一用户的文件名、摘录、
+`material_id` 和 Citation 不会进入候选上下文。业务表通过 `user_id` 与复合外键约束
+Session、Conversation、Learning Record 的归属，Job 与 Workflow 查询也校验所有权。
+
+旧匿名用户、Session、对话和学习记录由 Schema v2 原样保留；旧消息从 Session 反填直接
+`user_id`。旧全局资料/Chroma 与无归属 Job 不会自动分配给新账户，避免“第一个注册者认领
+全部旧数据”；活动旧 Job 会明确失败，后续如需认领必须执行显式、可审计迁移。完整设计、
+迁移、安全边界与验证证据见
+`docs/stage5-1-user-identity-completion-report.md`。
 
 ## 阶段 7：LangGraph 学习规划工作流
 
@@ -662,16 +688,17 @@ node --check web\static\app.js
 | **当前已完成 5：固定评测与 JSON 报告** | 10 个固定案例；来源、引用、必含词、拒答、LaTeX 和耗时检查；唯一 JSON 报告。 | 最新一次真实固定评测通过当前 10/10 案例，失败案例也能保存。 | 10/10 只代表这 10 个案例；模型输出具有概率性，修改后仍需复测。 |
 | **当前已完成 6：最小 FastAPI 服务** | `/health`、`/api/ask`、`/docs`；惰性 RAG 初始化；安全的 422、429、502、503 和 500 错误。 | 本地真实 `/api/ask` 已返回 `200`；健康检查不调用模型或产生费用。 | 当前主要调用为同步方式，阶段 3 保护只覆盖单进程。 |
 | **当前已完成 7：基础结构化请求日志** | `X-Request-ID`；状态码、耗时和错误类别的单行 JSON 控制台日志。 | 页面请求 ID 能与 Uvicorn 日志关联，不记录问题、回答、来源和敏感配置。 | 已由阶段 2 增加有限 JSONL 持久化；启动时仍需使用 `--no-access-log` 关闭原始访问日志。 |
-| **当前已完成 8：最小 Web 问答页** | 原生 HTML、CSS 和 JavaScript；API 状态、资料管理、问题输入、答案、来源、错误和请求 ID 展示。 | 用户已在本地页面完成真实问答和一次真实上传入库闭环。 | 当前没有鉴权或复杂前端状态管理；一次样例成功不代表长期稳定。 |
+| **当前已完成 8：最小 Web 问答页** | 原生 HTML、CSS 和 JavaScript；API 状态、登录注册、个人资料管理、问题输入、答案、来源、错误和请求 ID 展示。 | 用户已在历史版本完成真实问答与上传闭环；当前认证页面通过静态结构与 API 自动化验证。 | 本轮应用内浏览器连接被 Windows 沙箱阻断，登录后的真实视觉回归尚未完成。 |
 | **当前已完成 9：上传与增量索引** | 单文件安全暂存；本地解析；二次费用确认；新增、显式替换、删除、失败回滚和 RAG 服务刷新。 | Fake/Mock 覆盖上传、变化、删除、失败和安全边界；用户已真实验证 PDF 上传、增量索引和来源问答。 | 真实入库会产生 Embedding 费用；尚未进行并发、长时间和多类型资料矩阵验收。 |
 | **当前已完成 10：运行历史与评测对比** | 隐私安全请求元数据持久化为 1 MiB、3 备份的轮转 JSONL；零费用比较两份结构化评测报告。 | 能标出新增失败、恢复案例、案例集合和耗时变化；评测集 SHA 不同时给出不可直接比较的警告。 | 请求历史仍只适合本地单进程；固定案例结果不能外推为普遍效果。 |
-| **当前已完成 11：阶段 3 稳定性与安全保护** | 非阻塞单进程独占、滚动窗口限流、问答/索引进程预算、上传解析上限、暂存 TTL、外部调用超时重试、统一错误页和 URL 公网校验基础。 | Fake/Mock 覆盖繁忙、频率、预算、PDF/字符/批次限制、清理和私网/混合 DNS 拒绝；本地页面/API 以零费用方式验证。 | 尚无鉴权、分布式配额和并发压测；网页预览保护仍只适用于本地单进程。 |
+| **当前已完成 11：阶段 3 稳定性与安全保护** | 非阻塞单进程独占、滚动窗口限流、问答/索引进程预算、上传解析上限、暂存 TTL、外部调用超时重试、统一错误页和 URL 公网校验基础。 | Fake/Mock 覆盖繁忙、频率、预算、PDF/字符/批次限制、清理和私网/混合 DNS 拒绝；本地页面/API 以零费用方式验证。 | 当前已有最小身份认证，但仍无用户级费用配额、分布式保护和并发压测；网页预览保护仍只适用于本地单进程。 |
 | **当前已完成 12：阶段 4 LCEL 管道化 RAG** | 将“问题 → 检索 → 证据判断 → Prompt → 模型 → 结果处理”组合为可复用 Runnable，并保留混合检索、拒答、归一化和来源契约。 | CLI 与 FastAPI 经 `RAGService` 复用同一管道；Fake/Mock 验证成功、拒答、检索失败、模型失败和无证据时跳过 ChatModel。 | 本阶段未调用付费 API；此前真实 10/10 评测早于本次 LCEL 改造，不能作为改造后的真实效果证据。 |
 | **当前已完成 13：阶段 5 Crawl4AI 网页资料导入** | 公网 URL/DNS/每跳重定向校验；固定到已验证 IP 的受控单页抓取；Crawl4AI 本地 Markdown 预览；来源元数据；复用现有暂存与确认索引链路。 | Fake/Mock 覆盖 SSRF、重定向、超限、错误映射和隐私日志；本地原始 HTML 已实际通过 Crawl4AI 清理转换，API/UI 契约已自动验证；用户已在本地页面完成 `qiuzhi2046.com` 的真实公开网页 Markdown 预览。 | 真实网页付费入库与问答仍未验收；不支持 JavaScript 渲染、登录态或批量爬取。部分代理/Fake-IP DNS 环境会把域名映射到保留测试网段并被 SSRF 保护正确拒绝。 |
 | **当前已完成 14：阶段 6 LangChain Agent 工具编排** | 使用 `create_agent` 编排 `answer_from_materials`、`list_available_materials` 和 `preview_web_material` 三个受限工具；提供 `/api/agent`、单次费用确认、网页预览独立授权、模型/工具/总时限和单进程预算。 | Fake/Mock 验证工具选择、LCEL 回答与来源逐字保留、网页预览不入库、未授权拒绝、工具异常脱敏、重复付费工具限制、超时和 API 错误契约。 | 尚未调用真实工具调用模型，不能把自动测试当作真实 Agent 效果验收；没有索引、删除、任意文件或任意网络工具，也没有对话记忆和自定义 LangGraph 状态流。 |
 | **当前已完成 15：阶段 7 LangGraph 学习规划工作流** | 用显式 `StateGraph` 管理目标、受控 Agent 证据节点、三步计划、`interrupt` 确认、批准/拒绝分支、进度、复盘、一次手动重试和 SQLite 检查点删除。 | Fake/Mock 覆盖完整状态流、路由原因、费用确认、拒绝后停止、进度上限和隐私日志；真实 SQLite 文件关闭并重开后可以读取并恢复等待确认的线程。 | 尚未调用真实模型验收工作流效果；检查点是未加密的本地单实例数据，没有鉴权、跨实例锁、后台清理或任意对话长期记忆。 |
-| **当前已完成 16：V2 Stage 5.1 用户与持久化学习数据** | 服务端 UUID 用户、学习 Session、Tutor 消息、学习行为、版本迁移和 SQLite LangGraph checkpoint。 | 临时真实 SQLite 覆盖创建、归属隔离、历史查询和关闭重开后的 Tutor 续学；全量 Fake/Mock 自动化回归通过。 | 没有登录、OAuth、RBAC、加密、跨实例并发或生产备份；UUID 分区不等于公网鉴权。 |
-| **当前已完成 17：V2 Stage 5.2 异步文档处理** | SQLite Job、单进程后台 Worker、任务状态查询、启动恢复和失败落库；确认索引接口改为返回 `202 + job_id`。 | Fake/Mock 与临时真实 SQLite 覆盖单文件/批量成功、失败、去重、重启继续 pending、处理中断转 failed 和 API 查询；全量自动化回归通过。 | 暂存预解析仍同步；没有分布式队列、多实例抢占、自动重试、用户级资料隔离、负载测试或生产吞吐证据。 |
+| **当前已完成 16：历史 stage5-part1 持久化学习数据** | 服务端 UUID 用户、学习 Session、Tutor 消息、学习行为、版本迁移和 SQLite LangGraph checkpoint。 | 临时真实 SQLite 覆盖创建、归属分区、历史查询和关闭重开后的 Tutor 续学。 | 当时只有 UUID 分区；当前 Stage 5.1 已在其上补齐可信身份与所有权检查。 |
+| **当前已完成 17：V2 Stage 5.2 异步文档处理** | SQLite Job、单进程后台 Worker、任务状态查询、启动恢复和失败落库；确认索引接口改为返回 `202 + job_id`。 | Fake/Mock 与临时真实 SQLite 覆盖单文件/批量成功、失败、去重、重启继续 pending、处理中断转 failed 和 API 查询。 | 暂存预解析仍同步；当前 Stage 5.1 已为 Job 增加所有权，仍没有分布式队列、多实例抢占、自动重试或负载测试。 |
+| **当前已完成 18：V2 Stage 5.1 身份与数据隔离** | 邮箱注册登录、scrypt 密码哈希、可撤销服务端 Session、`current_user`、复合外键、每用户资料/Chroma 与 Job/Workflow 所有权。 | 392 项 Fake/Mock/临时 SQLite 回归覆盖认证失败、A/B 数据隔离、Tutor、Material、Vector Retrieval、Citation 来源、Job 与 Workflow IDOR。 | 仍是本地单实例 SQLite；无 OAuth、RBAC、密码重置、登录限流、多实例 Session、数据库加密、生产备份或公开部署验收。 |
 
 ### 下一阶段与后续阶段
 

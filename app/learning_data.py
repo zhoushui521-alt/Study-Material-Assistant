@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,7 +18,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 LEARNING_DB_PATH = (
     Path(__file__).resolve().parents[1] / "data" / "learning" / "learning.sqlite3"
 )
-LEARNING_SCHEMA_VERSION = 1
+LEARNING_SCHEMA_VERSION = 2
 MAX_SESSION_TOPIC_LENGTH = 200
 MAX_HISTORY_ITEMS = 100
 
@@ -37,6 +38,10 @@ class LearningDataConflictError(LearningDataError):
 @dataclass(frozen=True)
 class UserRecord:
     user_id: str
+    email: str | None
+    password_hash: str | None
+    display_name: str | None
+    updated_at: str | None
     created_at: str
 
 
@@ -53,6 +58,7 @@ class LearningSessionRecord:
 class ConversationMessageRecord:
     message_id: str
     session_id: str
+    user_id: str
     role: str
     content: str
     intent: str | None
@@ -142,6 +148,109 @@ INSERT OR IGNORE INTO schema_migrations(version) VALUES (1);
 COMMIT;
 """
 
+MIGRATION_2 = """
+BEGIN IMMEDIATE;
+
+ALTER TABLE users ADD COLUMN email TEXT;
+ALTER TABLE users ADD COLUMN password_hash TEXT;
+ALTER TABLE users ADD COLUMN display_name TEXT;
+ALTER TABLE users ADD COLUMN updated_at TEXT;
+
+UPDATE users SET updated_at = created_at WHERE updated_at IS NULL;
+
+CREATE UNIQUE INDEX idx_users_email_normalized
+    ON users(lower(email))
+    WHERE email IS NOT NULL;
+
+CREATE UNIQUE INDEX idx_learning_sessions_session_user
+    ON learning_sessions(session_id, user_id);
+
+ALTER TABLE conversation_messages RENAME TO conversation_messages_v1;
+DROP INDEX idx_conversation_messages_session_order;
+
+CREATE TABLE conversation_messages (
+    message_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    message_order INTEGER NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('user', 'tutor')),
+    content TEXT NOT NULL,
+    intent TEXT,
+    created_at TEXT NOT NULL DEFAULT (
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    ),
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    FOREIGN KEY (session_id, user_id)
+        REFERENCES learning_sessions(session_id, user_id) ON DELETE CASCADE
+);
+
+INSERT INTO conversation_messages(
+    message_id, user_id, session_id, message_order,
+    role, content, intent, created_at
+)
+SELECT messages.message_id, sessions.user_id, messages.session_id,
+       messages.message_order, messages.role, messages.content,
+       messages.intent, messages.created_at
+FROM conversation_messages_v1 AS messages
+INNER JOIN learning_sessions AS sessions
+    ON sessions.session_id = messages.session_id;
+
+DROP TABLE conversation_messages_v1;
+
+CREATE UNIQUE INDEX idx_conversation_messages_session_order
+    ON conversation_messages(session_id, message_order);
+CREATE INDEX idx_conversation_messages_user_created
+    ON conversation_messages(user_id, created_at, message_id);
+
+ALTER TABLE learning_records RENAME TO learning_records_v1;
+DROP INDEX idx_learning_records_user_created;
+
+CREATE TABLE learning_records (
+    record_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    activity_type TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    ),
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    FOREIGN KEY (session_id, user_id)
+        REFERENCES learning_sessions(session_id, user_id) ON DELETE CASCADE
+);
+
+INSERT INTO learning_records(
+    record_id, user_id, session_id, topic,
+    activity_type, metadata_json, created_at
+)
+SELECT record_id, user_id, session_id, topic,
+       activity_type, metadata_json, created_at
+FROM learning_records_v1;
+
+DROP TABLE learning_records_v1;
+
+CREATE INDEX idx_learning_records_user_created
+    ON learning_records(user_id, created_at DESC, record_id DESC);
+
+CREATE TABLE auth_sessions (
+    session_token_hash TEXT PRIMARY KEY CHECK (length(session_token_hash) = 64),
+    user_id TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    ),
+    expires_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_auth_sessions_user_created
+    ON auth_sessions(user_id, created_at DESC);
+CREATE INDEX idx_auth_sessions_expires
+    ON auth_sessions(expires_at);
+
+INSERT INTO schema_migrations(version) VALUES (2);
+COMMIT;
+"""
 
 def _canonical_uuid(value: str) -> str:
     try:
@@ -250,6 +359,15 @@ class LearningDataStore:
                 except Exception:
                     pass
                 raise
+        if current_version < 2:
+            try:
+                await connection.executescript(MIGRATION_2)
+            except Exception:
+                try:
+                    await connection.rollback()
+                except Exception:
+                    pass
+                raise
         await connection.commit()
 
     async def schema_version(self) -> int:
@@ -259,15 +377,30 @@ class LearningDataStore:
         row = await cursor.fetchone()
         return int(row[0]) if row is not None else 0
 
-    async def create_user(self) -> UserRecord:
+    async def create_user(
+        self,
+        *,
+        email: str | None = None,
+        password_hash: str | None = None,
+        display_name: str | None = None,
+    ) -> UserRecord:
         user_id = str(uuid.uuid4())
         async with self._write_lock:
             try:
                 await self._connection.execute(
-                    "INSERT INTO users(user_id) VALUES (?)",
-                    (user_id,),
+                    """
+                    INSERT INTO users(
+                        user_id, email, password_hash, display_name, updated_at
+                    ) VALUES (
+                        ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                    )
+                    """,
+                    (user_id, email, password_hash, display_name),
                 )
                 await self._connection.commit()
+            except sqlite3.IntegrityError as error:
+                await self._connection.rollback()
+                raise LearningDataConflictError("用户身份已经存在。") from error
             except Exception as error:
                 await self._connection.rollback()
                 raise LearningDataError("用户创建失败。") from error
@@ -276,13 +409,101 @@ class LearningDataStore:
     async def get_user(self, user_id: str) -> UserRecord:
         normalized_user_id = _canonical_uuid(user_id)
         cursor = await self._connection.execute(
-            "SELECT user_id, created_at FROM users WHERE user_id = ?",
+            """
+            SELECT user_id, email, password_hash, display_name,
+                   updated_at, created_at
+            FROM users WHERE user_id = ?
+            """,
             (normalized_user_id,),
         )
         row = await cursor.fetchone()
         if row is None:
             raise LearningDataNotFoundError("用户不存在。")
-        return UserRecord(user_id=row["user_id"], created_at=row["created_at"])
+        return self._user_record(row)
+
+    async def get_user_by_email(self, email: str) -> UserRecord:
+        cursor = await self._connection.execute(
+            """
+            SELECT user_id, email, password_hash, display_name,
+                   updated_at, created_at
+            FROM users
+            WHERE lower(email) = lower(?)
+            """,
+            (email,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise LearningDataNotFoundError("用户不存在。")
+        return self._user_record(row)
+
+    @staticmethod
+    def _user_record(row: aiosqlite.Row) -> UserRecord:
+        return UserRecord(
+            user_id=row["user_id"],
+            email=row["email"],
+            password_hash=row["password_hash"],
+            display_name=row["display_name"],
+            updated_at=row["updated_at"],
+            created_at=row["created_at"],
+        )
+
+    async def create_auth_session(
+        self,
+        user_id: str,
+        token_hash: str,
+        expires_at: str,
+    ) -> None:
+        normalized_user_id = _canonical_uuid(user_id)
+        async with self._write_lock:
+            try:
+                await self._connection.execute(
+                    """
+                    INSERT INTO auth_sessions(
+                        session_token_hash, user_id, expires_at
+                    ) VALUES (?, ?, ?)
+                    """,
+                    (token_hash, normalized_user_id, expires_at),
+                )
+                await self._connection.commit()
+            except Exception as error:
+                await self._connection.rollback()
+                raise LearningDataError("登录状态创建失败。") from error
+
+    async def get_user_by_auth_session(
+        self,
+        token_hash: str,
+        *,
+        now: str,
+    ) -> UserRecord:
+        cursor = await self._connection.execute(
+            """
+            SELECT users.user_id, users.email, users.password_hash,
+                   users.display_name, users.updated_at, users.created_at
+            FROM auth_sessions
+            INNER JOIN users ON users.user_id = auth_sessions.user_id
+            WHERE auth_sessions.session_token_hash = ?
+              AND auth_sessions.expires_at > ?
+              AND users.email IS NOT NULL
+              AND users.password_hash IS NOT NULL
+            """,
+            (token_hash, now),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise LearningDataNotFoundError("登录状态不存在。")
+        return self._user_record(row)
+
+    async def delete_auth_session(self, token_hash: str) -> None:
+        async with self._write_lock:
+            try:
+                await self._connection.execute(
+                    "DELETE FROM auth_sessions WHERE session_token_hash = ?",
+                    (token_hash,),
+                )
+                await self._connection.commit()
+            except Exception as error:
+                await self._connection.rollback()
+                raise LearningDataError("登录状态删除失败。") from error
 
     async def create_session(
         self,
@@ -384,24 +605,25 @@ class LearningDataStore:
         bounded_limit = _bounded_limit(limit)
         cursor = await self._connection.execute(
             """
-            SELECT message_id, session_id, role, content, intent, created_at
+            SELECT message_id, user_id, session_id, role, content, intent, created_at
             FROM (
-                SELECT message_id, session_id, message_order, role, content,
+                SELECT message_id, user_id, session_id, message_order, role, content,
                        intent, created_at
                 FROM conversation_messages
-                WHERE session_id = ?
+                WHERE session_id = ? AND user_id = ?
                 ORDER BY message_order DESC
                 LIMIT ?
             )
             ORDER BY message_order
             """,
-            (session.session_id, bounded_limit),
+            (session.session_id, session.user_id, bounded_limit),
         )
         rows = await cursor.fetchall()
         return tuple(
             ConversationMessageRecord(
                 message_id=row["message_id"],
                 session_id=row["session_id"],
+                user_id=row["user_id"],
                 role=row["role"],
                 content=row["content"],
                 intent=row["intent"],
@@ -421,15 +643,15 @@ class LearningDataStore:
         await self.get_user(normalized_user_id)
         cursor = await self._connection.execute(
             """
-            SELECT message_id, session_id, role, content, intent, created_at
+            SELECT message_id, user_id, session_id, role, content, intent, created_at
             FROM (
-                SELECT messages.message_id, messages.session_id,
+                SELECT messages.message_id, messages.user_id, messages.session_id,
                        messages.message_order, messages.role, messages.content,
                        messages.intent, messages.created_at
                 FROM conversation_messages AS messages
                 INNER JOIN learning_sessions AS sessions
                     ON sessions.session_id = messages.session_id
-                WHERE sessions.user_id = ?
+                WHERE messages.user_id = ?
                 ORDER BY messages.created_at DESC, messages.session_id DESC,
                          messages.message_order DESC
                 LIMIT ?
@@ -443,6 +665,7 @@ class LearningDataStore:
             ConversationMessageRecord(
                 message_id=row["message_id"],
                 session_id=row["session_id"],
+                user_id=row["user_id"],
                 role=row["role"],
                 content=row["content"],
                 intent=row["intent"],
@@ -539,12 +762,13 @@ class LearningDataStore:
                 await self._connection.execute(
                     """
                     INSERT INTO conversation_messages(
-                        message_id, session_id, message_order,
+                        message_id, user_id, session_id, message_order,
                         role, content, intent
-                    ) VALUES (?, ?, ?, 'user', ?, ?)
+                    ) VALUES (?, ?, ?, ?, 'user', ?, ?)
                     """,
                     (
                         str(uuid.uuid4()),
+                        normalized_user_id,
                         normalized_session_id,
                         next_message_order,
                         user_content,
@@ -554,12 +778,13 @@ class LearningDataStore:
                 await self._connection.execute(
                     """
                     INSERT INTO conversation_messages(
-                        message_id, session_id, message_order,
+                        message_id, user_id, session_id, message_order,
                         role, content, intent
-                    ) VALUES (?, ?, ?, 'tutor', ?, ?)
+                    ) VALUES (?, ?, ?, ?, 'tutor', ?, ?)
                     """,
                     (
                         str(uuid.uuid4()),
+                        normalized_user_id,
                         normalized_session_id,
                         next_message_order + 1,
                         tutor_content,

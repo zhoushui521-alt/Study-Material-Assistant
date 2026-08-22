@@ -24,8 +24,16 @@ from fastapi import (
     status,
 )
 from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from fastapi.staticfiles import StaticFiles
+from app.auth import (
+    AUTH_COOKIE_NAME,
+    AUTH_SESSION_TTL,
+    AuthenticationCredentialsError,
+    AuthenticationConflictError,
+    AuthenticationService,
+    AuthenticationValidationError,
+)
 
 from app.agent_service import (
     AGENT_MAX_MESSAGE_LENGTH,
@@ -112,6 +120,11 @@ from app.web_materials import (
     WebMaterialTooLargeError,
     WebMaterialValidationError,
 )
+from app.user_workspace import (
+    USER_WORKSPACES_DIR,
+    create_user_material_manager,
+    user_workspace_paths,
+)
 
 
 MAX_QUESTION_LENGTH = 2000
@@ -130,6 +143,7 @@ SECURITY_RESPONSE_HEADERS = {
     "X-Content-Type-Options": "nosniff",
 }
 _service_lock = Lock()
+_material_manager_lock = Lock()
 _workflow_service_lock = asyncio.Lock()
 _learning_data_lock = asyncio.Lock()
 _tutor_service_lock = asyncio.Lock()
@@ -200,7 +214,6 @@ class TutorChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     message: str = Field(min_length=1, max_length=TUTOR_MAX_MESSAGE_LENGTH)
-    user_id: UUID
     session_id: UUID
     confirm_api_cost: Literal[True]
 
@@ -245,9 +258,23 @@ class TutorChatResponse(BaseModel):
     route_trace: list[str]
 
 
+class AuthRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class RegisterRequest(AuthRequest):
+    display_name: str = Field(min_length=1, max_length=80)
+
+
 class UserResponse(BaseModel):
     user_id: UUID
+    email: str | None
+    display_name: str | None
     created_at: datetime
+    updated_at: datetime | None
 
 
 class LearningSessionCreateRequest(BaseModel):
@@ -524,9 +551,13 @@ async def lifespan(api: FastAPI) -> AsyncIterator[None]:
         ):
             try:
                 api.state.document_job_service = await DocumentJobService.open(
-                    material_manager=api.state.material_manager,
+                    material_manager_factory=lambda user_id: material_manager_for_user(
+                        api, user_id
+                    ),
                     operation_guard=api.state.operation_guard,
-                    invalidate_rag=lambda: invalidate_rag_service(api),
+                    invalidate_rag=lambda user_id: invalidate_rag_service(
+                        api, user_id
+                    ),
                 )
             except Exception:
                 request_logger.error(
@@ -577,14 +608,21 @@ async def lifespan(api: FastAPI) -> AsyncIterator[None]:
                     )
                 )
         api.state.learning_data_store = None
-        service = getattr(api.state, "rag_service", None)
-        try:
-            if service is not None:
+        services = tuple(getattr(api.state, "rag_services", {}).values())
+        for service in services:
+            try:
                 service.close()
-        finally:
-            api.state.agent_service = None
-            api.state.tutor_service = None
-            api.state.rag_service = None
+            except Exception:
+                request_logger.error(
+                    json.dumps(
+                        {"event": "rag_service_cleanup_failed"},
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                )
+        api.state.agent_services.clear()
+        api.state.tutor_services.clear()
+        api.state.rag_services.clear()
 
 
 app = FastAPI(
@@ -592,13 +630,15 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
-app.state.rag_service = None
-app.state.agent_service = None
-app.state.tutor_service = None
+app.state.rag_services = {}
+app.state.agent_services = {}
+app.state.tutor_services = {}
 app.state.study_workflow_service = None
 app.state.learning_data_store = None
 app.state.document_job_service = None
 app.state.material_manager = MaterialManager()
+app.state.material_managers = {}
+app.state.user_workspaces_dir = USER_WORKSPACES_DIR
 app.state.request_history_writer = RequestHistoryWriter()
 app.state.operation_guard = OperationGuard()
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -729,58 +769,115 @@ async def log_http_request(
     return response
 
 
-def get_rag_service(request: Request) -> RAGService:
-    """首次问答时初始化服务，之后在当前进程内复用。"""
-    service = getattr(request.app.state, "rag_service", None)
+def _auth_token(request: Request) -> str | None:
+    authorization = request.headers.get("authorization")
+    header_token: str | None = None
+    if authorization:
+        scheme, separator, credentials = authorization.partition(" ")
+        if separator != " " or scheme.casefold() != "bearer" or not credentials:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="登录状态无效或已过期。",
+            )
+        header_token = credentials.strip()
+    cookie_token = request.cookies.get(AUTH_COOKIE_NAME)
+    if header_token and cookie_token and header_token != cookie_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="登录状态无效或已过期。",
+        )
+    return header_token or cookie_token
+
+
+async def get_current_user(request: Request) -> UserRecord:
+    """只信任后端验证过的 Cookie 或 Bearer 凭证。"""
+    try:
+        store = await get_learning_data_store(request)
+        user = await AuthenticationService(store).authenticate(_auth_token(request))
+    except AuthenticationCredentialsError as error:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="登录状态无效或已过期。",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from error
+    request.state.current_user_id = user.user_id
+    return user
+
+
+def get_rag_service(
+    request: Request,
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
+) -> RAGService:
+    """按认证用户的独立 Chroma 目录惰性创建 RAG 服务。"""
+    services = request.app.state.rag_services
+    service = services.get(current_user.user_id)
     if service is not None:
         return service
 
     with _service_lock:
-        service = getattr(request.app.state, "rag_service", None)
+        service = services.get(current_user.user_id)
         if service is not None:
             return service
+        workspace = user_workspace_paths(
+            current_user.user_id,
+            workspaces_dir=request.app.state.user_workspaces_dir,
+        )
         try:
-            service = create_rag_service()
+            service = create_rag_service(workspace.vector_store)
         except RAGServiceInitializationError as error:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="RAG 服务暂不可用。",
             ) from error
-        request.app.state.rag_service = service
+        services[current_user.user_id] = service
         return service
 
 
-def get_rag_service_provider(request: Request) -> Callable[[], RAGService]:
+def get_rag_service_provider(
+    request: Request,
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
+) -> Callable[[], RAGService]:
     """注入惰性获取器，避免非法请求提前初始化 RAG。"""
-    return lambda: get_rag_service(request)
+    return lambda: get_rag_service(request, current_user)
 
 
-def get_agent_service(request: Request) -> AgentService:
-    """按需创建单个受限 Agent，并保证它与当前 RAG 服务使用同一份索引状态。"""
-    service = getattr(request.app.state, "agent_service", None)
+def get_agent_service(
+    request: Request,
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
+) -> AgentService:
+    """按用户创建受限 Agent，并复用该用户自己的资料与索引。"""
+    services = request.app.state.agent_services
+    service = services.get(current_user.user_id)
     if service is not None:
         return service
 
     while True:
-        rag_service = get_rag_service(request)
+        rag_service = get_rag_service(request, current_user)
         with _service_lock:
-            service = getattr(request.app.state, "agent_service", None)
+            service = services.get(current_user.user_id)
             if service is not None:
                 return service
-            if getattr(request.app.state, "rag_service", None) is not rag_service:
+            if request.app.state.rag_services.get(current_user.user_id) is not rag_service:
                 continue
+            manager = get_user_material_manager(request, current_user)
             service = create_agent_service(
                 rag_service,
-                request.app.state.material_manager,
-                get_web_material_service(request),
+                manager,
+                WebMaterialService(
+                    manager,
+                    allow_proxy_fake_ip=proxy_fake_ip_compatibility_enabled(),
+                ),
             )
-            request.app.state.agent_service = service
+            services[current_user.user_id] = service
             return service
 
 
-def get_agent_service_provider(request: Request) -> Callable[[], AgentService]:
+def get_agent_service_provider(
+    request: Request,
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
+) -> Callable[[], AgentService]:
     """返回惰性 Agent 获取器，确保无效或未确认费用的请求不会初始化模型。"""
-    return lambda: get_agent_service(request)
+    return lambda: get_agent_service(request, current_user)
 
 
 async def get_learning_data_store(request: Request) -> LearningDataStore:
@@ -802,35 +899,44 @@ async def get_learning_data_store(request: Request) -> LearningDataStore:
         return store
 
 
-async def get_tutor_service(request: Request) -> TutorWorkflowService:
-    """按需创建持久化 Tutor，并复用当前 RAG 与学习数据库。"""
-    service = getattr(request.app.state, "tutor_service", None)
+async def get_tutor_service(
+    request: Request,
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
+) -> TutorWorkflowService:
+    """按用户创建 Tutor；学习记录与 RAG 都使用同一 current_user。"""
+    services = request.app.state.tutor_services
+    service = services.get(current_user.user_id)
     if service is not None:
         return service
 
     learning_store = await get_learning_data_store(request)
     while True:
-        rag_service = await asyncio.to_thread(get_rag_service, request)
+        rag_service = await asyncio.to_thread(
+            get_rag_service,
+            request,
+            current_user,
+        )
         async with _tutor_service_lock:
             with _service_lock:
-                service = getattr(request.app.state, "tutor_service", None)
+                service = services.get(current_user.user_id)
                 if service is not None:
                     return service
-                if getattr(request.app.state, "rag_service", None) is not rag_service:
+                if request.app.state.rag_services.get(current_user.user_id) is not rag_service:
                     continue
                 service = create_tutor_workflow_service(
                     rag_service,
                     learning_store,
                 )
-                request.app.state.tutor_service = service
+                services[current_user.user_id] = service
                 return service
 
 
 def get_tutor_service_provider(
     request: Request,
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
 ) -> Callable[[], Awaitable[TutorWorkflowService]]:
     """返回惰性 Tutor 获取器，非法或未确认费用的请求不会初始化模型。"""
-    return lambda: get_tutor_service(request)
+    return lambda: get_tutor_service(request, current_user)
 
 
 async def get_study_workflow_service(request: Request) -> StudyWorkflowService:
@@ -846,9 +952,35 @@ async def get_study_workflow_service(request: Request) -> StudyWorkflowService:
         return service
 
 
-def get_material_manager(request: Request) -> MaterialManager:
-    """返回当前进程复用的资料管理服务。"""
-    return request.app.state.material_manager
+def material_manager_for_user(api: FastAPI, user_id: str) -> MaterialManager:
+    managers = api.state.material_managers
+    manager = managers.get(user_id)
+    if manager is not None:
+        return manager
+    with _material_manager_lock:
+        manager = managers.get(user_id)
+        if manager is None:
+            manager = create_user_material_manager(
+                user_id,
+                workspaces_dir=api.state.user_workspaces_dir,
+            )
+            manager.cleanup_stale_pending_uploads()
+            managers[user_id] = manager
+        return manager
+
+
+def get_user_material_manager(
+    request: Request,
+    current_user: UserRecord,
+) -> MaterialManager:
+    return material_manager_for_user(request.app, current_user.user_id)
+
+
+def get_material_manager(
+    request: Request,
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
+) -> MaterialManager:
+    return get_user_material_manager(request, current_user)
 
 
 def get_operation_guard(request: Request) -> OperationGuard:
@@ -858,8 +990,8 @@ def get_operation_guard(request: Request) -> OperationGuard:
 
 async def get_document_job_service(
     request: Request,
-    manager: Annotated[MaterialManager, Depends(get_material_manager)],
     guard: Annotated[OperationGuard, Depends(get_operation_guard)],
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
 ) -> DocumentJobService:
     """按需打开任务数据库并启动单进程后台 Worker。"""
     service = getattr(request.app.state, "document_job_service", None)
@@ -870,9 +1002,13 @@ async def get_document_job_service(
         if service is None:
             try:
                 service = await DocumentJobService.open(
-                    material_manager=manager,
+                    material_manager_factory=lambda user_id: material_manager_for_user(
+                        request.app, user_id
+                    ),
                     operation_guard=guard,
-                    invalidate_rag=lambda: invalidate_rag_service(request.app),
+                    invalidate_rag=lambda user_id: invalidate_rag_service(
+                        request.app, user_id
+                    ),
                 )
             except Exception as error:
                 raise HTTPException(
@@ -883,21 +1019,23 @@ async def get_document_job_service(
         return service
 
 
-def get_web_material_service(request: Request) -> WebMaterialService:
+def get_web_material_service(
+    request: Request,
+    manager: Annotated[MaterialManager, Depends(get_material_manager)],
+) -> WebMaterialService:
     """基于当前资料管理器构造轻量网页预览服务。"""
     return WebMaterialService(
-        request.app.state.material_manager,
+        manager,
         allow_proxy_fake_ip=proxy_fake_ip_compatibility_enabled(),
     )
 
 
-def invalidate_rag_service(api: FastAPI) -> None:
-    """资料索引变化后关闭旧 Chroma 客户端，让下一次问答重新初始化。"""
+def invalidate_rag_service(api: FastAPI, user_id: str) -> None:
+    """只刷新发生索引变化的用户服务，不影响其他学习空间。"""
     with _service_lock:
-        service = getattr(api.state, "rag_service", None)
-        api.state.agent_service = None
-        api.state.tutor_service = None
-        api.state.rag_service = None
+        service = api.state.rag_services.pop(user_id, None)
+        api.state.agent_services.pop(user_id, None)
+        api.state.tutor_services.pop(user_id, None)
     if service is not None:
         try:
             service.close()
@@ -1044,7 +1182,13 @@ def raise_study_workflow_http_error(error: Exception) -> None:
 
 
 def user_response(record: UserRecord) -> UserResponse:
-    return UserResponse(user_id=record.user_id, created_at=record.created_at)
+    return UserResponse(
+        user_id=record.user_id,
+        email=record.email,
+        display_name=record.display_name,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
 
 
 def learning_session_response(
@@ -1139,45 +1283,111 @@ def web_page() -> FileResponse:
 
 
 @app.post(
-    "/api/users",
+    "/api/auth/register",
     response_model=UserResponse,
     status_code=status.HTTP_201_CREATED,
 )
-async def create_user(
-    store: Annotated[LearningDataStore, Depends(get_learning_data_store)],
-) -> UserResponse:
-    """创建不含密码、邮箱或权限信息的本地用户身份。"""
-    try:
-        return user_response(await store.create_user())
-    except Exception as error:
-        raise_learning_data_http_error(error)
-        raise
-
-
-@app.get("/api/users/{user_id}", response_model=UserResponse)
-async def get_user(
-    user_id: UUID,
+async def register_user(
+    payload: RegisterRequest,
+    request: Request,
+    response: Response,
     store: Annotated[LearningDataStore, Depends(get_learning_data_store)],
 ) -> UserResponse:
     try:
-        return user_response(await store.get_user(str(user_id)))
-    except Exception as error:
-        raise_learning_data_http_error(error)
-        raise
+        session = await AuthenticationService(store).register(
+            email=payload.email,
+            password=payload.password,
+            display_name=payload.display_name,
+        )
+    except AuthenticationConflictError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+    except AuthenticationValidationError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(error),
+        ) from error
+    response.set_cookie(
+        key=AUTH_COOKIE_NAME,
+        value=session.token,
+        max_age=int(AUTH_SESSION_TTL.total_seconds()),
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="strict",
+        path="/",
+    )
+    return user_response(session.user)
+
+
+@app.post("/api/auth/login", response_model=UserResponse)
+async def login_user(
+    payload: AuthRequest,
+    request: Request,
+    response: Response,
+    store: Annotated[LearningDataStore, Depends(get_learning_data_store)],
+) -> UserResponse:
+    try:
+        session = await AuthenticationService(store).login(
+            email=payload.email,
+            password=payload.password,
+        )
+    except (AuthenticationCredentialsError, AuthenticationValidationError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="邮箱或密码错误。",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from error
+    response.set_cookie(
+        key=AUTH_COOKIE_NAME,
+        value=session.token,
+        max_age=int(AUTH_SESSION_TTL.total_seconds()),
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="strict",
+        path="/",
+    )
+    return user_response(session.user)
+
+
+@app.post("/api/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout_user(
+    request: Request,
+    response: Response,
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
+    store: Annotated[LearningDataStore, Depends(get_learning_data_store)],
+) -> None:
+    del current_user
+    await AuthenticationService(store).logout(_auth_token(request))
+    response.delete_cookie(
+        key=AUTH_COOKIE_NAME,
+        path="/",
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="strict",
+    )
+
+
+@app.get("/api/auth/me", response_model=UserResponse)
+async def get_authenticated_user(
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
+) -> UserResponse:
+    return user_response(current_user)
 
 
 @app.post(
-    "/api/users/{user_id}/sessions",
+    "/api/sessions",
     response_model=LearningSessionResponse,
     status_code=status.HTTP_201_CREATED,
 )
 async def create_learning_session(
-    user_id: UUID,
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
     payload: LearningSessionCreateRequest,
     store: Annotated[LearningDataStore, Depends(get_learning_data_store)],
 ) -> LearningSessionResponse:
     try:
-        record = await store.create_session(str(user_id), payload.topic)
+        record = await store.create_session(current_user.user_id, payload.topic)
         return learning_session_response(record)
     except Exception as error:
         raise_learning_data_http_error(error)
@@ -1185,16 +1395,16 @@ async def create_learning_session(
 
 
 @app.get(
-    "/api/users/{user_id}/sessions",
+    "/api/sessions",
     response_model=LearningSessionListResponse,
 )
 async def list_learning_sessions(
-    user_id: UUID,
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
     store: Annotated[LearningDataStore, Depends(get_learning_data_store)],
 ) -> LearningSessionListResponse:
     try:
         records = await store.list_sessions(
-            str(user_id),
+            current_user.user_id,
             limit=MAX_HISTORY_ITEMS,
         )
     except Exception as error:
@@ -1206,16 +1416,16 @@ async def list_learning_sessions(
 
 
 @app.get(
-    "/api/users/{user_id}/history",
+    "/api/history",
     response_model=LearningHistoryResponse,
 )
 async def get_learning_history(
-    user_id: UUID,
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
     store: Annotated[LearningDataStore, Depends(get_learning_data_store)],
     session_id: UUID | None = None,
 ) -> LearningHistoryResponse:
     """按用户边界读取有限对话和学习行为；可进一步限定 Session。"""
-    normalized_user_id = str(user_id)
+    normalized_user_id = current_user.user_id
     try:
         if session_id is None:
             messages = await store.list_user_messages(
@@ -1451,10 +1661,11 @@ async def preview_web_material(
 async def index_staged_material_batch(
     payload: MaterialBatchIndexRequest,
     service: Annotated[DocumentJobService, Depends(get_document_job_service)],
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
 ) -> DocumentJobResponse:
     """一次确认后创建批量文档任务，不在请求内执行解析或 Embedding。"""
     try:
-        job = await service.enqueue(payload.upload_ids)
+        job = await service.enqueue(current_user.user_id, payload.upload_ids)
     except Exception as error:
         if isinstance(error, (DocumentJobError, ValueError)):
             raise_document_job_http_error(error)
@@ -1473,11 +1684,12 @@ async def index_staged_material(
     upload_id: str,
     payload: MaterialIndexRequest,
     service: Annotated[DocumentJobService, Depends(get_document_job_service)],
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
 ) -> DocumentJobResponse:
     """取得明确费用确认后创建文档任务，并立即返回任务 ID。"""
     del payload
     try:
-        job = await service.enqueue((upload_id,))
+        job = await service.enqueue(current_user.user_id, (upload_id,))
     except Exception as error:
         if isinstance(error, (DocumentJobError, ValueError)):
             raise_document_job_http_error(error)
@@ -1494,10 +1706,11 @@ async def index_staged_material(
 async def get_document_job(
     job_id: str,
     service: Annotated[DocumentJobService, Depends(get_document_job_service)],
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
 ) -> DocumentJobResponse:
     """查询文档后台任务的持久化状态和最终索引摘要。"""
     try:
-        job = await service.get_job(job_id)
+        job = await service.get_job(current_user.user_id, job_id)
     except Exception as error:
         raise_document_job_http_error(error)
         raise
@@ -1513,6 +1726,7 @@ def delete_material(
     payload: MaterialDeleteRequest,
     request: Request,
     manager: Annotated[MaterialManager, Depends(get_material_manager)],
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
     guard: Annotated[OperationGuard, Depends(get_operation_guard)],
 ) -> MaterialDeleteResponse:
     """取得明确删除确认后移除资料及对应 Chroma 记录。"""
@@ -1520,13 +1734,13 @@ def delete_material(
     try:
         with guard.acquire("delete"):
             result: MaterialDeleteResult = manager.delete_material(filename)
-            invalidate_rag_service(request.app)
+            invalidate_rag_service(request.app, current_user.user_id)
     except OperationProtectionError as error:
         raise_operation_http_error(error)
         raise
     except Exception as error:
         if isinstance(error, MaterialRollbackError):
-            invalidate_rag_service(request.app)
+            invalidate_rag_service(request.app, current_user.user_id)
         raise_material_http_error(error)
         raise
     return MaterialDeleteResponse(
@@ -1626,6 +1840,8 @@ async def run_agent(
 async def tutor_chat(
     payload: TutorChatRequest,
     request: Request,
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
+    store: Annotated[LearningDataStore, Depends(get_learning_data_store)],
     guard: Annotated[OperationGuard, Depends(get_operation_guard)],
     service_provider: Annotated[
         Callable[[], Awaitable[TutorWorkflowService]],
@@ -1634,10 +1850,14 @@ async def tutor_chat(
 ) -> TutorChatResponse:
     """在显式费用确认下执行单 Tutor 的有状态学习工作流。"""
     try:
+        await store.get_session(
+            current_user.user_id,
+            str(payload.session_id),
+        )
         with guard.acquire("agent", units=1):
             service = await service_provider()
             result: TutorResult = await service.chat(
-                str(payload.user_id),
+                current_user.user_id,
                 str(payload.session_id),
                 payload.message,
             )
@@ -1690,6 +1910,7 @@ async def tutor_chat(
 async def start_study_workflow(
     payload: StudyWorkflowStartRequest,
     request: Request,
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
     workflow_service: Annotated[
         StudyWorkflowService,
         Depends(get_study_workflow_service),
@@ -1705,6 +1926,7 @@ async def start_study_workflow(
         with guard.acquire("agent", units=1):
             agent_service = await asyncio.to_thread(agent_service_provider)
             result = await workflow_service.start(
+                current_user.user_id,
                 str(uuid4()),
                 payload.goal,
                 agent_service=agent_service,
@@ -1728,6 +1950,7 @@ async def confirm_study_workflow(
     workflow_id: UUID,
     payload: StudyWorkflowConfirmRequest,
     request: Request,
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
     workflow_service: Annotated[
         StudyWorkflowService,
         Depends(get_study_workflow_service),
@@ -1737,7 +1960,11 @@ async def confirm_study_workflow(
     """用同一 thread_id 恢复 interrupt，并按批准或拒绝分支继续。"""
     try:
         with guard.acquire("workflow"):
-            result = await workflow_service.confirm(str(workflow_id), payload.decision)
+            result = await workflow_service.confirm(
+                current_user.user_id,
+                str(workflow_id),
+                payload.decision,
+            )
     except OperationProtectionError as error:
         request.state.error_category = "workflow_protected"
         raise_operation_http_error(error)
@@ -1757,6 +1984,7 @@ async def update_study_workflow_progress(
     workflow_id: UUID,
     payload: StudyWorkflowProgressRequest,
     request: Request,
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
     workflow_service: Annotated[
         StudyWorkflowService,
         Depends(get_study_workflow_service),
@@ -1767,6 +1995,7 @@ async def update_study_workflow_progress(
     try:
         with guard.acquire("workflow"):
             result = await workflow_service.record_progress(
+                current_user.user_id,
                 str(workflow_id),
                 payload.note,
                 complete_current_task=payload.complete_current_task,
@@ -1790,6 +2019,7 @@ async def retry_study_workflow(
     workflow_id: UUID,
     payload: StudyWorkflowRetryRequest,
     request: Request,
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
     workflow_service: Annotated[
         StudyWorkflowService,
         Depends(get_study_workflow_service),
@@ -1803,9 +2033,12 @@ async def retry_study_workflow(
     """再次确认费用后执行唯一一次手动 Agent 重试。"""
     try:
         with guard.acquire("agent", units=1):
-            await workflow_service.assert_retryable(str(workflow_id))
+            await workflow_service.assert_retryable(
+                current_user.user_id, str(workflow_id)
+            )
             agent_service = await asyncio.to_thread(agent_service_provider)
             result = await workflow_service.retry(
+                current_user.user_id,
                 str(workflow_id),
                 agent_service=agent_service,
             )
@@ -1827,6 +2060,7 @@ async def retry_study_workflow(
 async def get_study_workflow(
     workflow_id: UUID,
     request: Request,
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
     workflow_service: Annotated[
         StudyWorkflowService,
         Depends(get_study_workflow_service),
@@ -1834,7 +2068,7 @@ async def get_study_workflow(
 ) -> StudyWorkflowResponse:
     """零模型调用读取指定 thread_id 的最新持久化状态。"""
     try:
-        result = await workflow_service.get(str(workflow_id))
+        result = await workflow_service.get(current_user.user_id, str(workflow_id))
     except Exception as error:
         request.state.error_category = "workflow"
         raise_study_workflow_http_error(error)
@@ -1850,6 +2084,7 @@ async def delete_study_workflow(
     workflow_id: UUID,
     payload: StudyWorkflowDeleteRequest,
     request: Request,
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
     workflow_service: Annotated[
         StudyWorkflowService,
         Depends(get_study_workflow_service),
@@ -1860,7 +2095,7 @@ async def delete_study_workflow(
     del payload
     try:
         with guard.acquire("workflow"):
-            await workflow_service.delete(str(workflow_id))
+            await workflow_service.delete(current_user.user_id, str(workflow_id))
     except OperationProtectionError as error:
         request.state.error_category = "workflow_protected"
         raise_operation_http_error(error)

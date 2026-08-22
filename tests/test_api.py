@@ -46,6 +46,7 @@ from app.web_materials import (
     WebMaterialPreview,
     WebMaterialService,
 )
+from tests.auth_helpers import TEST_USER, clear_user_services, install_authenticated_user
 
 
 def pending_document_job(
@@ -54,6 +55,7 @@ def pending_document_job(
 ) -> DocumentJobRecord:
     return DocumentJobRecord(
         job_id="11111111-1111-4111-8111-111111111111",
+        user_id="22222222-2222-4222-8222-222222222222",
         upload_ids=tuple(chr(97 + index) * 32 for index in range(len(filenames))),
         filenames=filenames,
         status="pending",
@@ -71,6 +73,7 @@ class APITests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         app.dependency_overrides.clear()
+        install_authenticated_user()
         app.state.rag_service = None
         app.state.document_job_service = None
         app.state.operation_guard = OperationGuard()
@@ -80,6 +83,7 @@ class APITests(unittest.TestCase):
 
     def tearDown(self) -> None:
         app.dependency_overrides.clear()
+        clear_user_services()
         app.state.rag_service = None
         app.state.document_job_service = None
         self.temporary_directory.cleanup()
@@ -105,7 +109,7 @@ class APITests(unittest.TestCase):
             ),
             patch("app.api.WebMaterialService") as service_class,
         ):
-            service = get_web_material_service(request)
+            service = get_web_material_service(request, manager)
 
         service_class.assert_called_once_with(
             manager,
@@ -158,9 +162,11 @@ class APITests(unittest.TestCase):
         self.assertEqual(script.status_code, 200)
         self.assertIn("javascript", script.headers["content-type"])
         self.assertIn('fetch("/health"', script.text)
-        self.assertIn('fetch("/api/ask"', script.text)
-        self.assertIn('fetch("/api/tutor/chat"', script.text)
-        self.assertIn('fetch("/api/materials/stage-batch"', script.text)
+        self.assertIn('authenticatedFetch("/api/ask"', script.text)
+        self.assertIn('authenticatedFetch("/api/tutor/chat"', script.text)
+        self.assertIn('authenticatedFetch("/api/materials/stage-batch"', script.text)
+        self.assertIn('fetch("/api/auth/me"', script.text)
+        self.assertNotIn('"user_id": tutorIdentity', script.text)
         self.assertIn('"/api/materials/batch/index"', script.text)
         self.assertIn("单次上限 60", script.text)
         self.assertIn("confirm_api_cost: true", script.text)
@@ -445,17 +451,17 @@ class APITests(unittest.TestCase):
 
     def test_lifespan_closes_initialized_service(self) -> None:
         service = Mock(spec=RAGService)
-        app.state.rag_service = service
+        app.state.rag_services[TEST_USER.user_id] = service
 
         with TestClient(app) as client:
             self.assertEqual(client.get("/health").status_code, 200)
 
         service.close.assert_called_once_with()
-        self.assertIsNone(app.state.rag_service)
+        self.assertNotIn(TEST_USER.user_id, app.state.rag_services)
 
     def test_lifespan_closes_service_after_context_error(self) -> None:
         service = Mock(spec=RAGService)
-        app.state.rag_service = service
+        app.state.rag_services[TEST_USER.user_id] = service
 
         async def exit_with_error() -> None:
             with self.assertRaisesRegex(RuntimeError, "application failed"):
@@ -465,7 +471,7 @@ class APITests(unittest.TestCase):
         asyncio.run(exit_with_error())
 
         service.close.assert_called_once_with()
-        self.assertIsNone(app.state.rag_service)
+        self.assertNotIn(TEST_USER.user_id, app.state.rag_services)
 
     def test_stale_cleanup_failure_does_not_block_startup_or_leak_detail(self) -> None:
         previous_manager = app.state.material_manager
@@ -814,7 +820,9 @@ class APITests(unittest.TestCase):
             response.json()["job_id"],
             "11111111-1111-4111-8111-111111111111",
         )
-        service.enqueue.assert_awaited_once_with(("a" * 32,))
+        service.enqueue.assert_awaited_once_with(
+            TEST_USER.user_id, ("a" * 32,)
+        )
 
     def test_confirmed_batch_index_returns_one_pending_job(self) -> None:
         upload_ids = ["a" * 32, "b" * 32]
@@ -834,7 +842,7 @@ class APITests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.json()["filenames"], ["chapter.pdf", "notes.docx"])
-        service.enqueue.assert_awaited_once_with(upload_ids)
+        service.enqueue.assert_awaited_once_with(TEST_USER.user_id, upload_ids)
 
     def test_duplicate_active_index_job_returns_conflict(self) -> None:
         upload_ids = ["a" * 32, "b" * 32]
@@ -927,7 +935,7 @@ class APITests(unittest.TestCase):
         )
         app.dependency_overrides[get_material_manager] = lambda: manager
         cached_service = Mock(spec=RAGService)
-        app.state.rag_service = cached_service
+        app.state.rag_services[TEST_USER.user_id] = cached_service
 
         with TestClient(app) as client:
             response = client.request(
@@ -939,7 +947,7 @@ class APITests(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertNotIn("sensitive internal detail", response.text)
         cached_service.close.assert_called_once_with()
-        self.assertIsNone(app.state.rag_service)
+        self.assertNotIn(TEST_USER.user_id, app.state.rag_services)
 
     def test_request_metadata_is_persisted_without_question_or_answer(self) -> None:
         service = Mock(spec=RAGService)

@@ -27,6 +27,7 @@ if __package__:
     from app.embedding_client import EmbeddingConfig
     from app.langchain_store import (
         BAILIAN_EMBEDDING_BATCH_SIZE,
+        VECTOR_STORE_DIR,
         close_vector_store,
         create_langchain_embeddings,
         delete_material_documents,
@@ -57,6 +58,7 @@ else:
     from embedding_client import EmbeddingConfig
     from langchain_store import (
         BAILIAN_EMBEDDING_BATCH_SIZE,
+        VECTOR_STORE_DIR,
         close_vector_store,
         create_langchain_embeddings,
         delete_material_documents,
@@ -297,13 +299,18 @@ def _write_upload_stream(
     return total_bytes, digest.hexdigest()
 
 
-def _production_sync_index(chunks: list[DocumentChunk]) -> IndexSyncSummary:
+def _production_sync_index(
+    chunks: list[DocumentChunk],
+    *,
+    persist_directory: Path = VECTOR_STORE_DIR,
+) -> IndexSyncSummary:
     config = EmbeddingConfig.from_environment()
     embeddings = create_langchain_embeddings(config)
     sync_result = sync_vector_store(
         chunks,
         embeddings,
         allow_empty=True,
+        persist_directory=persist_directory,
         runtime_config=runtime_index_config(config),
     )
     try:
@@ -316,11 +323,16 @@ def _production_sync_index(chunks: list[DocumentChunk]) -> IndexSyncSummary:
         close_vector_store(sync_result.vector_store)
 
 
-def _production_estimate_index_batches(chunks: list[DocumentChunk]) -> int:
+def _production_estimate_index_batches(
+    chunks: list[DocumentChunk],
+    *,
+    persist_directory: Path = VECTOR_STORE_DIR,
+) -> int:
     config = EmbeddingConfig.from_environment()
     return estimate_vector_store_sync_batches(
         chunks,
         runtime_config=runtime_index_config(config),
+        persist_directory=persist_directory,
     )
 
 
@@ -333,6 +345,7 @@ class MaterialManager:
         documents_dir: Path = DOCUMENTS_DIR,
         pending_uploads_dir: Path = PENDING_UPLOADS_DIR,
         pending_deletions_dir: Path = PENDING_DELETIONS_DIR,
+        vector_store_dir: Path = VECTOR_STORE_DIR,
         max_file_size: int = MAX_UPLOAD_BYTES,
         max_pdf_pages: int = MAX_UPLOAD_PDF_PAGES,
         max_extracted_characters: int = MAX_UPLOAD_EXTRACTED_CHARACTERS,
@@ -359,16 +372,30 @@ class MaterialManager:
         self.documents_dir = documents_dir
         self.pending_uploads_dir = pending_uploads_dir
         self.pending_deletions_dir = pending_deletions_dir
+        self.vector_store_dir = vector_store_dir
         self.max_file_size = max_file_size
         self.max_pdf_pages = max_pdf_pages
         self.max_extracted_characters = max_extracted_characters
         self.max_embedding_batches = max_embedding_batches
         self.max_batch_files = max_batch_files
         self.pending_upload_ttl_seconds = pending_upload_ttl_seconds
-        self._sync_index = sync_index or _production_sync_index
-        self._delete_index = delete_index or delete_material_documents
+        self._sync_index = sync_index or (
+            lambda chunks: _production_sync_index(
+                chunks, persist_directory=self.vector_store_dir
+            )
+        )
+        self._delete_index = delete_index or (
+            lambda filename: delete_material_documents(
+                filename, persist_directory=self.vector_store_dir
+            )
+        )
         self._estimate_index_batches = (
-            estimate_index_batches or _production_estimate_index_batches
+            estimate_index_batches
+            or (
+                lambda chunks: _production_estimate_index_batches(
+                    chunks, persist_directory=self.vector_store_dir
+                )
+            )
         )
 
     def cleanup_stale_pending_uploads(self, *, now: datetime | None = None) -> int:

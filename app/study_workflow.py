@@ -51,6 +51,7 @@ class LearningTask(TypedDict):
 
 class StudyWorkflowState(TypedDict, total=False):
     workflow_id: str
+    user_id: str
     action: Literal["start", "retry", "progress"]
     goal: str
     status: WorkflowStatus
@@ -444,12 +445,13 @@ class StudyWorkflowService:
             "recursion_limit": WORKFLOW_RECURSION_LIMIT,
         }
 
-    async def _snapshot_values(self, workflow_id: str) -> StudyWorkflowState:
+    async def _snapshot_values(self, user_id: str, workflow_id: str) -> StudyWorkflowState:
         snapshot = await self._graph.aget_state(self._config(workflow_id))
         values = snapshot.values
         if (
             not isinstance(values, Mapping)
             or values.get("workflow_id") != workflow_id
+            or values.get("user_id") != user_id
         ):
             raise StudyWorkflowNotFoundError("学习工作流不存在。")
         return dict(values)
@@ -475,13 +477,14 @@ class StudyWorkflowService:
 
     async def start(
         self,
+        user_id: str,
         workflow_id: str,
         goal: str,
         *,
         agent_service: AgentService,
     ) -> StudyWorkflowResult:
         try:
-            await self._snapshot_values(workflow_id)
+            await self._snapshot_values(user_id, workflow_id)
         except StudyWorkflowNotFoundError:
             pass
         else:
@@ -489,6 +492,7 @@ class StudyWorkflowService:
         await self._graph.ainvoke(
             {
                 "workflow_id": workflow_id,
+                "user_id": user_id,
                 "action": "start",
                 "goal": goal,
                 "status": "planning",
@@ -504,14 +508,15 @@ class StudyWorkflowService:
             context=WorkflowRunContext(agent_service=agent_service),
             durability="sync",
         )
-        return self._result(await self._snapshot_values(workflow_id))
+        return self._result(await self._snapshot_values(user_id, workflow_id))
 
     async def confirm(
         self,
+        user_id: str,
         workflow_id: str,
         decision: ApprovalDecision,
     ) -> StudyWorkflowResult:
-        state = await self._snapshot_values(workflow_id)
+        state = await self._snapshot_values(user_id, workflow_id)
         if state.get("status") != "awaiting_confirmation":
             raise StudyWorkflowConflictError("当前工作流不等待确认。")
         await self._graph.ainvoke(
@@ -520,16 +525,17 @@ class StudyWorkflowService:
             context=WorkflowRunContext(),
             durability="sync",
         )
-        return self._result(await self._snapshot_values(workflow_id))
+        return self._result(await self._snapshot_values(user_id, workflow_id))
 
     async def record_progress(
         self,
+        user_id: str,
         workflow_id: str,
         note: str,
         *,
         complete_current_task: bool,
     ) -> StudyWorkflowResult:
-        state = await self._snapshot_values(workflow_id)
+        state = await self._snapshot_values(user_id, workflow_id)
         if state.get("status") != "in_progress":
             raise StudyWorkflowConflictError("当前工作流不能更新进度。")
         normalized_note = note.strip()
@@ -550,15 +556,16 @@ class StudyWorkflowService:
             context=WorkflowRunContext(),
             durability="sync",
         )
-        return self._result(await self._snapshot_values(workflow_id))
+        return self._result(await self._snapshot_values(user_id, workflow_id))
 
     async def retry(
         self,
+        user_id: str,
         workflow_id: str,
         *,
         agent_service: AgentService,
     ) -> StudyWorkflowResult:
-        state = await self._snapshot_values(workflow_id)
+        state = await self._snapshot_values(user_id, workflow_id)
         retry_count = state.get("retry_count", 0)
         if (
             state.get("status") != "failed"
@@ -578,10 +585,10 @@ class StudyWorkflowService:
             context=WorkflowRunContext(agent_service=agent_service),
             durability="sync",
         )
-        return self._result(await self._snapshot_values(workflow_id))
+        return self._result(await self._snapshot_values(user_id, workflow_id))
 
-    async def assert_retryable(self, workflow_id: str) -> None:
-        state = await self._snapshot_values(workflow_id)
+    async def assert_retryable(self, user_id: str, workflow_id: str) -> None:
+        state = await self._snapshot_values(user_id, workflow_id)
         if (
             state.get("status") != "failed"
             or not state.get("retryable", False)
@@ -589,11 +596,11 @@ class StudyWorkflowService:
         ):
             raise StudyWorkflowConflictError("当前工作流不能再次重试。")
 
-    async def get(self, workflow_id: str) -> StudyWorkflowResult:
-        return self._result(await self._snapshot_values(workflow_id))
+    async def get(self, user_id: str, workflow_id: str) -> StudyWorkflowResult:
+        return self._result(await self._snapshot_values(user_id, workflow_id))
 
-    async def delete(self, workflow_id: str) -> None:
-        await self._snapshot_values(workflow_id)
+    async def delete(self, user_id: str, workflow_id: str) -> None:
+        await self._snapshot_values(user_id, workflow_id)
         await self._checkpointer.adelete_thread(workflow_id)
 
     async def close(self) -> None:

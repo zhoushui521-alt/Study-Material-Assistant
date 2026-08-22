@@ -5,6 +5,7 @@ from langchain_core.documents import Document
 
 from app.context_selector import EvidenceScoreContextSelector
 from app.langchain_rag import RAGAnswer
+from app.langchain_store import VECTOR_STORE_DIR
 from app.index_manifest import IndexCompatibilityStatus
 from app.rag_service import (
     ADJACENT_WINDOW,
@@ -48,7 +49,7 @@ class RAGServiceTests(unittest.TestCase):
         create_embeddings.assert_called_once_with(
             embedding_config_from_environment.return_value
         )
-        open_store.assert_called_once_with(create_embeddings.return_value)
+        open_store.assert_called_once_with(create_embeddings.return_value, VECTOR_STORE_DIR)
         chat_config_from_environment.assert_called_once_with()
         create_chat_model.assert_called_once_with(
             chat_config_from_environment.return_value
