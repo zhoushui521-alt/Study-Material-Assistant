@@ -100,6 +100,8 @@ python -m app.search_documents
 `index_manifest.json` 记录 Embedding、集合、距离度量、Parser/Chunker 和 Metadata
 Schema 版本。已有记录但没有 Manifest 的旧索引只允许问答读取；同步和删除会明确
 失败，不会自动清空或迁移。
+需要显式迁移时，必须按 [Legacy Index Migration Runbook](docs/legacy-index-migration-runbook.md)
+先生成只读计划和本地候选索引，再在停服后提升；不要直接修改正式 Chroma 文件。
 该命令会调用真实 Embedding API，可能产生费用；运行前应先确认解析结果。
 
 索引成功后，运行 `app/search_langchain.py`。当前正式 Retrieval 仍采用 Stage 2 Baseline：
