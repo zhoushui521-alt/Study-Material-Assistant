@@ -1,6 +1,6 @@
 # Study Material Assistant V2 · Architecture
 
-本文描述 `study-material-v2-stage5-part3`（`ea8459b`）对应的当前真实架构。它是本地单实例原型，不代表生产部署拓扑。
+本文描述 `study-material-v2-stage5-part4` 对应的当前真实架构；具体提交以 Tag 解析结果为准。它是具备容器部署定义的单实例原型，不代表生产环境已经部署。
 
 ## 1. Frontend
 
@@ -143,7 +143,38 @@ Worker 复用现有费用保护、Manifest 检查、增量同步、回滚与 RAG
 
 当前没有 Redis、Celery、RabbitMQ、Kafka、分布式队列、多 Worker 抢占、自动重试、取消、优先级或精确剩余时间。
 
-## 7. 当前部署边界
+## 7. Service Runtime 与 Docker Compose
+
+Stage 5.3 的部署候选保持单进程、单实例：
+
+```text
+Browser
+  → app container / FastAPI :8000
+       ├─ 同源 web/
+       ├─ RAG / Tutor / Material / Study Workflow Service
+       └─ in-process Document Worker
+  → /app/data named volume
+       ├─ learning SQLite
+       ├─ document job SQLite
+       ├─ workflow checkpoint SQLite
+       ├─ user_workspaces/<uuid>/{documents,pending_uploads,pending_deletions,vector_store}
+       ├─ request logs
+       └─ Crawl4AI runtime
+```
+
+`app.config.Settings` 统一解析 `APP_HOST`、`APP_PORT`、`APP_DATA_DIR` 和百炼模型配置。
+`app.server` 是本地与容器共用启动入口。Compose 在容器内使用 `/app/data`，宿主端口由
+`ZHIXING_PORT` 控制；`.env` 与本地 `data/` 不进入镜像。
+
+没有独立 frontend：当前前端是 FastAPI 同源静态资源。没有独立 worker：当前 Job 领取、
+OperationGuard、SQLite 与 Chroma 都是单进程一致性边界。没有 database 服务：当前仍使用
+SQLite。Compose network 只为部署定义清楚边界，不代表存在微服务通信。
+
+`GET /health` 作为容器 liveness check，只检查 API 可响应，不初始化 RAG、Chroma 或模型。
+当前机器已完成本地 startup、Health、首页和静态资源 HTTP 200 验证；由于没有 Docker CLI，
+镜像构建、Compose 启动、volume 重启恢复和容器内 HTTP 尚未验证。
+
+## 8. 当前部署边界
 
 当前运行拓扑是本地 FastAPI 单实例 + 本地文件系统 + 本地 SQLite + 本地 Chroma。已有自动化和历史本地运行证据不能证明：
 

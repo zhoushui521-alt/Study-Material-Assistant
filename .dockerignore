@@ -1,0 +1,14 @@
+.git
+.gitignore
+.agents
+.codex
+.venv
+.venv-1
+.env
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+data
+tmp
+evaluation/results

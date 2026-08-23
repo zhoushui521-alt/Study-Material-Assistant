@@ -6,9 +6,9 @@
 
 - 同步日期：2026-08-24
 - 分支：`main`
-- 当前提交：`ea8459b94ef0130ee64cc2503bb201d42b90237d`
-- 当前 Tag：`study-material-v2-stage5-part3`
-- 工作区：同步开始时干净；`main` 比 `origin/main` 超前 19 个本地提交
+- Stage 5.3 起点：`29e7c7e4e11781e26d8cf0dc3a523b83efe6acbd`
+- 当前 checkpoint：`study-material-v2-stage5-part4`（以 Tag 解析到的提交为准）
+- 远程边界：本地 checkpoint 未 push；公开部署状态不能由本地 Git 推断
 - 证据层级：代码实现、自动化测试、历史本地运行、真实模型实验、生产验证分别记录，不能互相替代
 
 状态含义：
@@ -123,6 +123,20 @@
 - 未验证：本阶段没有真实模型、并发、负载、公开部署或渗透测试验收；浏览器连接受本地沙箱辅助程序错误影响，未完成登录后的真实视觉回归。
 - 证据：[User Identity & Data Isolation Completion Report](stage5-1-user-identity-completion-report.md)
 
+#### Stage 5.3 / part4：Serviceization & Deployment Readiness
+
+- 状态：**Completed with environment-limited Docker validation**
+- Checkpoint：`study-material-v2-stage5-part4`（以 Tag 解析到的提交为准）
+- 已实现：统一 Settings、`APP_DATA_DIR` 持久化根目录、本地/容器共用启动入口、非 root
+  Dockerfile、单服务 Compose、named volume、bridge network、容器 Healthcheck 与部署文档。
+- 自动验证：新增配置/部署契约测试，全量 Fake/Mock/临时 SQLite 回归 `400/400`；
+  `compileall`、内存编译、`pip check`、前端语法和 Compose YAML 结构检查通过。
+- 本地运行：使用独立临时数据目录完成 `app.server` startup，`/health`、首页和静态脚本均
+  返回 HTTP 200，未调用外部模型或修改真实索引。
+- 边界：当前机器没有 Docker CLI，因此镜像 build/up、容器重启恢复与容器内页面未验证；
+  没有公开部署、HTTPS、负载、渗透、生产备份或多实例证据。
+- 证据：[Stage 5.3 Completion Report](stage5-3-completion-report.md)
+
 ## 3. 当前正式主链路
 
 当前正式 RAG 仍是 Stage 2 Retrieval baseline，加上 Stage 3.4 Context Selector：
@@ -148,9 +162,9 @@ BM25 + RRF、Cross-Encoder 和 Structure-aware Chunking 都是已完成、可复
 
 ## 4. 未开始与未验证
 
-- **In Progress：无。** 当前没有形成中的后续 Stage checkpoint。
-- **Planned：部署。** README 把部署列为下一阶段，但仓库尚无公开地址、容器/平台验收、持久化部署方案或生产监控证据。
-- **未验证：** 真实 Tutor 全路径质量、当前认证版本的真实付费 RAG 闭环、并发/负载、长时间运行、多实例一致性、生产备份恢复和公开安全验收。
+- **In Progress：无。** Stage 5.3 已形成 checkpoint，未自动开始后续 Stage。
+- **Planned：Observability / BYOK。** 仅为后续候选，不代表已经实现或已经排期。
+- **未验证：** Docker build/up、容器重启恢复、真实 Tutor 全路径质量、当前认证版本的真实付费 RAG 闭环、并发/负载、长时间运行、多实例一致性、生产备份恢复和公开安全验收。
 
 ## 5. 持续同步规则
 

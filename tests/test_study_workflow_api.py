@@ -284,7 +284,7 @@ class StudyWorkflowAPITests(unittest.TestCase):
 
         self.assertEqual(first.status_code, 201)
         self.assertEqual(second.status_code, 200)
-        opener.assert_awaited_once_with()
+        opener.assert_awaited_once_with(app.state.settings.study_workflow_database_path)
         workflow_service.close.assert_awaited_once_with()
 
     def test_delete_requires_confirmation_and_removes_checkpoint_thread(self) -> None:

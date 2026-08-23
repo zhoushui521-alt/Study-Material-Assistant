@@ -169,3 +169,48 @@ Stage 4 的 Tutor 使用 `InMemorySaver`，进程退出后 Session 状态丢失�
 在当前本地规模下保留物理目录隔离。它复用现有 MaterialManager、Manifest、回滚和 Retrieval 调用链，并降低漏写 metadata filter 的风险。代价是用户增多时 Chroma 客户端与目录数量增加；未来外部向量库仍需服务端强制 owner filter。
 
 证据：[User Identity & Data Isolation Completion Report](stage5-1-user-identity-completion-report.md)
+
+## 7. 单服务 Compose，而不是提前拆分 frontend、worker 和 database
+
+Decision: 以一个 FastAPI 应用容器承载同源前端、API、Service Layer 和进程内 Document Worker。
+
+Status: Adopted for `study-material-v2-stage5-part4`。
+
+Background: 当前前端没有独立构建系统，Worker 依赖进程内 OperationGuard、SQLite 和本地
+Chroma；仓库没有跨进程锁、共享 Session Store、分布式任务领取或外部向量库。
+
+Options: 单服务 Compose；拆分 frontend/backend/worker；引入 PostgreSQL/Redis 后再拆分。
+
+Choice: 当前只定义 `app` 服务、named volume 和 bridge network。
+
+Reason: 单服务忠实表达真实调用链，并用最小运维成本实现可重复启动和持久化。
+
+Trade-off: 不能水平扩展，应用更新会同时影响 API 与 Worker，named volume 只适合单写实例。
+
+Evidence: `Dockerfile`、`docker-compose.yml`、Deployment Contract tests、Stage 5.3 本地启动验证。
+
+Revisit Trigger: 需要独立扩缩 Worker、多 API 实例、共享吞吐、跨实例故障恢复或零停机部署。
+
+## 8. 保持 SQLite，PostgreSQL 迁移由多实例需求触发
+
+Decision: Stage 5.3 继续使用 SQLite，不安装 PostgreSQL 驱动或执行数据迁移。
+
+Status: Adopted；PostgreSQL 为 Future。
+
+Background: 当前业务数据、Auth Session、Job 和 LangGraph checkpoint 都已用 SQLite 实现并
+通过单实例自动化；没有多实例、负载或生产灾备证据证明迁移收益大于复杂度。
+
+Options: 立即迁移 PostgreSQL；保留 SQLite 并记录迁移契约；增加 Redis 作为旁路。
+
+Choice: 保留 SQLite，并让统一 Settings 显式固定数据库和数据目录边界。
+
+Reason: Stage 5.3 的问题是可启动与可维护，不是共享事务或分布式协调。Redis 不能替代关系
+约束、Migration 或 Chroma/文件共享问题。
+
+Trade-off: 仍然不能安全运行多个写实例，也没有生产备份、故障切换和连接池能力。
+
+Evidence: Stage 5.1/5.2/part3 Completion Reports、400/400 回归、Stage 5.3 Compose 单服务设计。
+
+Revisit Trigger: 多 API 实例、独立 Worker、共享事务吞吐、正式灾备或 SQLite 锁竞争成为
+可观察瓶颈。届时需同时处理 SQL 方言、Migration、PostgreSQL checkpointer、事务 Job 领取、
+共享文件/向量存储与回滚，不能只更换数据库连接字符串。

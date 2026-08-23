@@ -11,6 +11,101 @@
 
 README 保留项目介绍与运行方式；阶段状态发生变化时，以 `PROJECT_STATUS.md` 及其链接的 Git Tag、Completion Report 和代码证据为准。
 
+## 快速启动
+
+### 当前服务拓扑
+
+当前部署单元是一个 FastAPI 进程：
+
+```text
+Browser
+  → FastAPI（同源静态前端 + HTTP API）
+  → RAG / Tutor / Document Job Service
+  → data/（SQLite + 用户文件 + Chroma + 请求日志）
+```
+
+原生前端由 FastAPI 直接提供，Document Worker 是应用进程内的单个 `asyncio` Worker。
+因此当前 Compose 不拆分 frontend、worker 或 database 服务；拆分后会超出 SQLite、
+进程锁、Session 和本地 Chroma 的现有一致性边界。完整调用链见
+[ARCHITECTURE](docs/ARCHITECTURE.md)。
+
+主要技术栈：Python、FastAPI、LangChain/LCEL、LangGraph、Chroma、SQLite、
+原生 HTML/CSS/JavaScript，以及用于公开网页 Markdown 转换的 Crawl4AI。
+
+### 本地启动
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
+python -m app.server
+```
+
+默认访问 `http://127.0.0.1:8000/`，健康检查为
+`http://127.0.0.1:8000/health`。启动和健康检查不会调用 Embedding、ChatModel 或
+Reranker；只有执行需要模型的业务操作才可能产生外部调用与费用。
+
+### Docker Compose 启动
+
+先复制示例配置并按需填写百炼配置：
+
+```powershell
+Copy-Item .env.example .env
+docker compose up --build
+```
+
+镜像构建完成后可直接使用：
+
+```powershell
+docker compose up
+```
+
+默认访问 `http://127.0.0.1:8000/`。Compose 只启动一个应用容器，并把全部持久状态保存到
+`zhixing-data` named volume；`docker compose down` 不会删除该卷。不要在未备份时执行
+会删除 volume 的命令。
+
+### 环境变量
+
+| 变量 | 默认值 | 用途 |
+| --- | --- | --- |
+| `APP_HOST` | `127.0.0.1` | 本地监听地址；Compose 在容器内固定为 `0.0.0.0`。 |
+| `APP_PORT` | `8000` | FastAPI 进程监听端口。 |
+| `APP_DATA_DIR` | `data` | SQLite、用户上传、Chroma、Job、Workflow 与安全请求日志的统一持久化根目录。 |
+| `ZHIXING_PORT` | `8000` | Compose 暴露到宿主机的端口，不传入应用进程。 |
+| `BAILIAN_API_KEY` | 空 | 真实模型调用凭证；缺失时健康检查仍可用，需要模型的请求会明确失败。 |
+| `BAILIAN_BASE_URL` | 空 | 百炼 OpenAI 兼容模式 Base URL。 |
+| `BAILIAN_EMBEDDING_MODEL` | `text-embedding-v4` | Embedding 模型。 |
+| `BAILIAN_EMBEDDING_DIMENSIONS` | `1024` | Embedding 维度。 |
+| `BAILIAN_CHAT_MODEL` | `qwen-plus` | ChatModel 名称。 |
+
+`.env`、`data/` 与真实密钥不会进入 Docker build context，也不得提交到 Git。
+
+### 持久化边界
+
+`APP_DATA_DIR` 或容器中的 `/app/data` 包含：
+
+- `learning/learning.sqlite3`：用户、认证 Session、学习数据与 Tutor checkpoint；
+- `jobs/document_jobs.sqlite3`：异步文档任务；
+- `study_workflows/checkpoints.sqlite3`：Study Workflow checkpoint；
+- `user_workspaces/<user_uuid>/`：用户文件、暂存区与 Chroma；
+- `request_logs/`：有限轮转的隐私安全请求元数据；
+- `crawl4ai_runtime/`：网页 Markdown 转换运行目录。
+
+这些路径适用于当前单实例 SQLite/Chroma 架构。不要把同一个 volume 同时挂载到多个应用
+副本进行写入。
+
+### 常见问题
+
+- **`/health` 正常但问答失败：** 健康检查只证明 API 进程可响应。继续检查
+  `BAILIAN_API_KEY`、`BAILIAN_BASE_URL`、当前用户资料和 Index Manifest。
+- **宿主机 8000 端口被占用：** 在 `.env` 中修改 `ZHIXING_PORT`，例如 `8012`；
+  容器内端口仍保持 8000。
+- **为什么没有独立 frontend 或 worker 容器：** 当前前端是 FastAPI 同源静态资源，
+  Worker 依赖同进程锁、SQLite 和本地 Chroma；强拆会扩大一致性风险。
+- **为什么没有 PostgreSQL 或 Redis：** 当前目标是可重复启动的单实例部署候选。
+  多实例、独立 Worker 或共享事务吞吐成为真实需求后，再迁移数据库和任务基础设施。
+
 ## 当前状态
 
 项目已保留手写 RAG 全链路，并完成 LangChain + Chroma 持久化增量索引、
@@ -40,7 +135,7 @@ Agent 通过三个固定工具动态选择资料问答、资料列表或公开�
 V2 Stage 4 在不改动上述旧接口的前提下新增单 Tutor workflow：确定性识别问答、解释、
 练习、总结和学习规划，通过三个受控 Tool 复用现有 RAG、生成结构化练习或总结，并只在
 当前推理中保留有限短期状态。后续持久化阶段增加 SQLite 用户、学习 Session、完整 Tutor
-对话、学习行为与异步文档任务；当前 Stage 5.1 再用邮箱密码、可撤销服务端 Session、
+对话、学习行为与异步文档任务；stage5-part3 再用邮箱密码、可撤销服务端 Session、
 `current_user` 和每用户独立资料/Chroma 工作区建立可信身份与数据隔离。前端不再提交
 可伪造的 `user_id`。
 
@@ -480,7 +575,7 @@ Tutor 不把长期学习历史拼进 Prompt，也不把 LangGraph State 当作�
 本阶段选择 SQLite 是因为当前仍是本地单实例原型，并且仓库已经锁定
 `aiosqlite` 与 `langgraph-checkpoint-sqlite`；没有真实并发或部署证据支持立即引入
 PostgreSQL、连接池和新迁移框架。当前只建立基于 UUID 和外键查询的用户数据分区，
-当时尚无认证授权；这份历史边界由当前 Stage 5.1 身份与隔离阶段补齐。原始设计证据保留在
+当时尚无认证授权；这份历史边界由 stage5-part3 身份与隔离阶段补齐。原始设计证据保留在
 `docs/stage5-1-completion-report.md`，没有被新报告覆盖。
 
 
@@ -500,7 +595,7 @@ Job 支持 `pending`、`processing`、`completed`、`failed` 四种状态。进�
 `0 / 10 / 100` 的阶段信号，不是 Embedding 百分比。完整设计、验证证据和边界见
 `docs/stage5-2-completion-report.md`。
 
-## V2 Stage 5.1：User Identity & Data Isolation（stage5-part3）
+## V2 Stage 5 / part3：User Identity & Data Isolation
 
 当前身份系统使用 SQLite 保存用户与可撤销服务端 Session：密码通过标准库 scrypt 加盐
 哈希，浏览器只持有 HttpOnly、SameSite=Strict Cookie，数据库只保存令牌 SHA-256。相比
@@ -704,15 +799,16 @@ node --check web\static\app.js
 | **当前已完成 13：阶段 5 Crawl4AI 网页资料导入** | 公网 URL/DNS/每跳重定向校验；固定到已验证 IP 的受控单页抓取；Crawl4AI 本地 Markdown 预览；来源元数据；复用现有暂存与确认索引链路。 | Fake/Mock 覆盖 SSRF、重定向、超限、错误映射和隐私日志；本地原始 HTML 已实际通过 Crawl4AI 清理转换，API/UI 契约已自动验证；用户已在本地页面完成 `qiuzhi2046.com` 的真实公开网页 Markdown 预览。 | 真实网页付费入库与问答仍未验收；不支持 JavaScript 渲染、登录态或批量爬取。部分代理/Fake-IP DNS 环境会把域名映射到保留测试网段并被 SSRF 保护正确拒绝。 |
 | **当前已完成 14：阶段 6 LangChain Agent 工具编排** | 使用 `create_agent` 编排 `answer_from_materials`、`list_available_materials` 和 `preview_web_material` 三个受限工具；提供 `/api/agent`、单次费用确认、网页预览独立授权、模型/工具/总时限和单进程预算。 | Fake/Mock 验证工具选择、LCEL 回答与来源逐字保留、网页预览不入库、未授权拒绝、工具异常脱敏、重复付费工具限制、超时和 API 错误契约。 | 尚未调用真实工具调用模型，不能把自动测试当作真实 Agent 效果验收；没有索引、删除、任意文件或任意网络工具，也没有对话记忆和自定义 LangGraph 状态流。 |
 | **当前已完成 15：阶段 7 LangGraph 学习规划工作流** | 用显式 `StateGraph` 管理目标、受控 Agent 证据节点、三步计划、`interrupt` 确认、批准/拒绝分支、进度、复盘、一次手动重试和 SQLite 检查点删除。 | Fake/Mock 覆盖完整状态流、路由原因、费用确认、拒绝后停止、进度上限和隐私日志；真实 SQLite 文件关闭并重开后可以读取并恢复等待确认的线程。 | 尚未调用真实模型验收工作流效果；检查点是未加密的本地单实例数据，没有鉴权、跨实例锁、后台清理或任意对话长期记忆。 |
-| **当前已完成 16：历史 stage5-part1 持久化学习数据** | 服务端 UUID 用户、学习 Session、Tutor 消息、学习行为、版本迁移和 SQLite LangGraph checkpoint。 | 临时真实 SQLite 覆盖创建、归属分区、历史查询和关闭重开后的 Tutor 续学。 | 当时只有 UUID 分区；当前 Stage 5.1 已在其上补齐可信身份与所有权检查。 |
-| **当前已完成 17：V2 Stage 5.2 异步文档处理** | SQLite Job、单进程后台 Worker、任务状态查询、启动恢复和失败落库；确认索引接口改为返回 `202 + job_id`。 | Fake/Mock 与临时真实 SQLite 覆盖单文件/批量成功、失败、去重、重启继续 pending、处理中断转 failed 和 API 查询。 | 暂存预解析仍同步；当前 Stage 5.1 已为 Job 增加所有权，仍没有分布式队列、多实例抢占、自动重试或负载测试。 |
-| **当前已完成 18：V2 Stage 5.1 身份与数据隔离** | 邮箱注册登录、scrypt 密码哈希、可撤销服务端 Session、`current_user`、复合外键、每用户资料/Chroma 与 Job/Workflow 所有权。 | 392 项 Fake/Mock/临时 SQLite 回归覆盖认证失败、A/B 数据隔离、Tutor、Material、Vector Retrieval、Citation 来源、Job 与 Workflow IDOR。 | 仍是本地单实例 SQLite；无 OAuth、RBAC、密码重置、登录限流、多实例 Session、数据库加密、生产备份或公开部署验收。 |
+| **当前已完成 16：历史 stage5-part1 持久化学习数据** | 服务端 UUID 用户、学习 Session、Tutor 消息、学习行为、版本迁移和 SQLite LangGraph checkpoint。 | 临时真实 SQLite 覆盖创建、归属分区、历史查询和关闭重开后的 Tutor 续学。 | 当时只有 UUID 分区；stage5-part3 已在其上补齐可信身份与所有权检查。 |
+| **当前已完成 17：V2 Stage 5.2 异步文档处理** | SQLite Job、单进程后台 Worker、任务状态查询、启动恢复和失败落库；确认索引接口改为返回 `202 + job_id`。 | Fake/Mock 与临时真实 SQLite 覆盖单文件/批量成功、失败、去重、重启继续 pending、处理中断转 failed 和 API 查询。 | 暂存预解析仍同步；stage5-part3 已为 Job 增加所有权，仍没有分布式队列、多实例抢占、自动重试或负载测试。 |
+| **当前已完成 18：V2 Stage 5 / part3 身份与数据隔离** | 邮箱注册登录、scrypt 密码哈希、可撤销服务端 Session、`current_user`、复合外键、每用户资料/Chroma 与 Job/Workflow 所有权。 | 392 项 Fake/Mock/临时 SQLite 回归覆盖认证失败、A/B 数据隔离、Tutor、Material、Vector Retrieval、Citation 来源、Job 与 Workflow IDOR。 | 仍是本地单实例 SQLite；无 OAuth、RBAC、密码重置、登录限流、多实例 Session、数据库加密、生产备份或公开部署验收。 |
+| **当前已完成 19：V2 Stage 5.3 / part4 服务化与部署准备** | 统一 Settings、`app.server`、非 root Dockerfile、单服务 Compose、named volume、Healthcheck、README 与部署边界。 | 新增专项 8/8、全量 400/400；本机 `app.server`、Health、首页和静态资源 HTTP 200；Compose YAML 可解析。 | 当前机器没有 Docker CLI，build/up、容器重启恢复、公开部署、HTTPS、负载与生产备份均未验证。 |
 
 ### 下一阶段与后续阶段
 
 | 阶段 | 主要内容 | 完成标志 | 与前一阶段的依赖 / 核心风险与边界 |
 | --- | --- | --- | --- |
-| **阶段 8（下一阶段）：部署** | 管理环境变量和启动配置、持久化目录、健康检查，并选择 Docker 或合适平台；区分 FastAPI 服务、Chroma 数据、LangGraph SQLite 检查点和网页抓取运行资源。 | 获得可公开访问的演示地址；重启后资料索引和必要状态不丢失；健康检查不调用模型或产生费用。 | 当前原始 HTML 转换不启动浏览器；公开服务还需要鉴权、跨实例配额、数据库并发方案、检查点加密/备份和完整性能基线。 |
+| **下一阶段候选（未开始）：Stage 5.4 Observability** | 仅在确认真实运行目标和故障模式后补充必要日志、指标与运行证据。 | 尚未定义或实施；需等待用户确认下一阶段。 | 不在 Stage 5.3 自动加入 tracing、metrics、云平台或新基础设施。 |
 | **阶段 9（后续阶段）：演示和求职材料** | 补充 README 架构图和完整运行步骤，说明 RAG、LCEL、Crawl4AI、Agent 和 LangGraph 的职责边界；整理评测证据、典型问题、拒答案例、故障定位案例、演示视频和项目讲解。 | 项目可以写入简历；能在面试中讲清需求、架构、取舍、验证和风险；明确区分已实现、已自动化验证、已真实运行和后续规划。 | 依赖部署与证据归档；不得把固定评测案例、原型能力或未上线功能包装成普遍稳定的生产成果。 |
 
 排序遵循“先稳定资料进入和可观测性，再重组固定 RAG 管道，随后增加网页采集和

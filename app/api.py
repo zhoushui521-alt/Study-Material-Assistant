@@ -43,8 +43,8 @@ from app.agent_service import (
     AgentTimeoutError,
     create_agent_service,
 )
+from app.config import get_settings
 from app.document_jobs import (
-    DOCUMENT_JOB_DB_PATH,
     DocumentJobConflictError,
     DocumentJobError,
     DocumentJobNotFoundError,
@@ -121,7 +121,6 @@ from app.web_materials import (
     WebMaterialValidationError,
 )
 from app.user_workspace import (
-    USER_WORKSPACES_DIR,
     create_user_material_manager,
     user_workspace_paths,
 )
@@ -547,10 +546,11 @@ async def lifespan(api: FastAPI) -> AsyncIterator[None]:
                 )
         if (
             getattr(api.state, "document_job_service", None) is None
-            and DOCUMENT_JOB_DB_PATH.is_file()
+            and api.state.settings.document_job_database_path.is_file()
         ):
             try:
                 api.state.document_job_service = await DocumentJobService.open(
+                    database_path=api.state.settings.document_job_database_path,
                     material_manager_factory=lambda user_id: material_manager_for_user(
                         api, user_id
                     ),
@@ -625,21 +625,30 @@ async def lifespan(api: FastAPI) -> AsyncIterator[None]:
         api.state.rag_services.clear()
 
 
+runtime_settings = get_settings()
+
+
 app = FastAPI(
     title="智能学习资料助手 API",
     version="0.1.0",
     lifespan=lifespan,
 )
+app.state.settings = runtime_settings
 app.state.rag_services = {}
 app.state.agent_services = {}
 app.state.tutor_services = {}
 app.state.study_workflow_service = None
 app.state.learning_data_store = None
 app.state.document_job_service = None
-app.state.material_manager = MaterialManager()
+app.state.material_manager = MaterialManager(
+    documents_dir=runtime_settings.data_dir / "documents",
+    pending_uploads_dir=runtime_settings.data_dir / "pending_uploads",
+    pending_deletions_dir=runtime_settings.data_dir / "pending_deletions",
+    vector_store_dir=runtime_settings.data_dir / "vector_store",
+)
 app.state.material_managers = {}
-app.state.user_workspaces_dir = USER_WORKSPACES_DIR
-app.state.request_history_writer = RequestHistoryWriter()
+app.state.user_workspaces_dir = runtime_settings.user_workspaces_dir
+app.state.request_history_writer = RequestHistoryWriter(runtime_settings.request_log_path)
 app.state.operation_guard = OperationGuard()
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -889,7 +898,9 @@ async def get_learning_data_store(request: Request) -> LearningDataStore:
         store = getattr(request.app.state, "learning_data_store", None)
         if store is None:
             try:
-                store = await LearningDataStore.open()
+                store = await LearningDataStore.open(
+                    request.app.state.settings.learning_database_path
+                )
             except Exception as error:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -947,7 +958,9 @@ async def get_study_workflow_service(request: Request) -> StudyWorkflowService:
     async with _workflow_service_lock:
         service = getattr(request.app.state, "study_workflow_service", None)
         if service is None:
-            service = await open_sqlite_study_workflow_service()
+            service = await open_sqlite_study_workflow_service(
+                request.app.state.settings.study_workflow_database_path
+            )
             request.app.state.study_workflow_service = service
         return service
 
@@ -1002,6 +1015,7 @@ async def get_document_job_service(
         if service is None:
             try:
                 service = await DocumentJobService.open(
+                    database_path=request.app.state.settings.document_job_database_path,
                     material_manager_factory=lambda user_id: material_manager_for_user(
                         request.app, user_id
                     ),

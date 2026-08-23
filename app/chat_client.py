@@ -1,16 +1,15 @@
 """调用百炼 OpenAI 兼容 Chat API，基于检索资料生成回答。"""
 
 import json
-import os
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 if __package__:
-    from app.config import load_local_env
+    from app.config import get_settings
     from app.chunk_documents import DocumentChunk
 else:
-    from config import load_local_env
+    from config import get_settings
     from chunk_documents import DocumentChunk
 
 
@@ -26,10 +25,10 @@ class ChatConfig:
 
     @classmethod
     def from_environment(cls) -> "ChatConfig":
-        load_local_env()
-        api_key = os.getenv("BAILIAN_API_KEY", "").strip()
-        base_url = os.getenv("BAILIAN_BASE_URL", "").strip().rstrip("/")
-        model = os.getenv("BAILIAN_CHAT_MODEL", "qwen-plus").strip()
+        settings = get_settings()
+        api_key = settings.bailian_api_key
+        base_url = settings.bailian_base_url
+        model = settings.bailian_chat_model
         if not api_key:
             raise ChatAPIError("缺少 BAILIAN_API_KEY。")
         if not base_url:

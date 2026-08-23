@@ -1,0 +1,40 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: study-material-assistant:stage5-3
+    init: true
+    restart: unless-stopped
+    environment:
+      APP_HOST: "0.0.0.0"
+      APP_PORT: "8000"
+      APP_DATA_DIR: "/app/data"
+      BAILIAN_API_KEY: "${BAILIAN_API_KEY:-}"
+      BAILIAN_BASE_URL: "${BAILIAN_BASE_URL:-}"
+      BAILIAN_EMBEDDING_MODEL: "${BAILIAN_EMBEDDING_MODEL:-text-embedding-v4}"
+      BAILIAN_EMBEDDING_DIMENSIONS: "${BAILIAN_EMBEDDING_DIMENSIONS:-1024}"
+      BAILIAN_CHAT_MODEL: "${BAILIAN_CHAT_MODEL:-qwen-plus}"
+    ports:
+      - "${ZHIXING_PORT:-8000}:8000"
+    volumes:
+      - zhixing-data:/app/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).close()"
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    networks:
+      - zhixing-network
+
+volumes:
+  zhixing-data:
+
+networks:
+  zhixing-network:
+    driver: bridge

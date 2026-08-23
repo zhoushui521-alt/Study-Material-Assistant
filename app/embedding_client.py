@@ -1,15 +1,14 @@
 """调用百炼 OpenAI 兼容 Embedding API，并返回文本向量。"""
 
 import json
-import os
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 if __package__:
-    from app.config import load_local_env
+    from app.config import get_settings
 else:
-    from config import load_local_env
+    from config import get_settings
 
 
 class EmbeddingAPIError(RuntimeError):
@@ -25,11 +24,11 @@ class EmbeddingConfig:
 
     @classmethod
     def from_environment(cls) -> "EmbeddingConfig":
-        load_local_env()
-        api_key = os.getenv("BAILIAN_API_KEY", "").strip()
-        base_url = os.getenv("BAILIAN_BASE_URL", "").strip().rstrip("/")
-        model = os.getenv("BAILIAN_EMBEDDING_MODEL", "text-embedding-v4").strip()
-        dimensions_text = os.getenv("BAILIAN_EMBEDDING_DIMENSIONS", "1024").strip()
+        settings = get_settings()
+        api_key = settings.bailian_api_key
+        base_url = settings.bailian_base_url
+        model = settings.bailian_embedding_model
+        dimensions_text = settings.bailian_embedding_dimensions
 
         if not api_key:
             raise EmbeddingAPIError("缺少 BAILIAN_API_KEY：请复制 .env.example 为 .env 后填写。")

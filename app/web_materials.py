@@ -15,8 +15,8 @@ from io import BytesIO
 from time import monotonic
 from urllib.parse import urljoin, urlsplit
 
+from app.config import get_settings
 from app.chunk_documents import (
-    PROJECT_ROOT,
     WebSourceMetadata,
     encode_web_source_marker,
 )
@@ -34,7 +34,7 @@ MAX_WEB_MARKDOWN_CHARACTERS = 30_000
 MAX_WEB_REDIRECTS = 5
 WEB_FETCH_TIMEOUT_SECONDS = 20.0
 WEB_USER_AGENT = "StudyMaterialAssistant/1.0"
-CRAWL4AI_RUNTIME_DIR = PROJECT_ROOT / "data" / "crawl4ai_runtime"
+CRAWL4AI_RUNTIME_DIR = get_settings().crawl4ai_runtime_dir
 ALLOWED_HTML_MEDIA_TYPES = {"text/html", "application/xhtml+xml"}
 REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 TITLE_MAX_CHARACTERS = 200
