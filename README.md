@@ -3,6 +3,14 @@
 这是一个面向学习资料的 RAG 项目：读入资料、检索相关文本、基于证据回答问题，
 并展示可以核对的来源。
 
+## 项目文档入口
+
+- [PROJECT_STATUS](docs/PROJECT_STATUS.md)：当前项目状态的唯一入口，记录 V2 checkpoint、证据层级、已完成能力与未验证项；
+- [ARCHITECTURE](docs/ARCHITECTURE.md)：当前真实前端、后端、RAG、Tutor、存储与异步处理架构；
+- [DECISIONS](docs/DECISIONS.md)：由实验数据和 Completion Report 支撑的关键技术取舍。
+
+README 保留项目介绍与运行方式；阶段状态发生变化时，以 `PROJECT_STATUS.md` 及其链接的 Git Tag、Completion Report 和代码证据为准。
+
 ## 当前状态
 
 项目已保留手写 RAG 全链路，并完成 LangChain + Chroma 持久化增量索引、
