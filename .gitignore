@@ -13,6 +13,7 @@ data/crawl4ai_runtime/
 data/study_workflows/
 data/learning/
 data/jobs/
+data/model_gateway/
 data/models/
 data/index_migrations/
 data/user_workspaces/

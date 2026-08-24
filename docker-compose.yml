@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: study-material-assistant:stage5-3
+    image: study-material-assistant:stage6-final
     init: true
     restart: unless-stopped
     environment:

@@ -15,6 +15,8 @@
 - Stage 6.2 Engineering Documentation checkpoint：`826f75a`
 - Stage 6.3 RAG Evaluation checkpoint：`6f63f6a`
 - Stage 6.4 Demo checkpoint：`8554491`
+- Stage 6.5 Interview checkpoint：`c773d05`
+- Stage 6 Final Tag：`study-material-v2-stage6-final`，指向 Stage 6 Completion Report 提交
 - 远程边界：本地提交未 push；公开部署状态不能由本地 Git 推断
 - 证据层级：代码实现、自动化测试、历史本地运行、真实模型实验、生产验证分别记录，不能互相替代
 
@@ -189,7 +191,7 @@
 
 ### Stage 6：Production Readiness & Portfolio
 
-- 状态：**In Progress**
+- 状态：**Completed**；最终边界为 `study-material-v2-stage6-final`
 - 目标：把现有工程整理为可展示、可复现、可维护、可面试解释的作品；不新增核心业务功能。
 - Stage 6.1：**Completed**；`c3c39e0` 新增 [Final Architecture](FINAL_ARCHITECTURE.md)，
   冻结系统图、上传/RAG/Gateway 数据流、Agent/Workflow、持久化、观测、安全与部署边界。
@@ -200,10 +202,11 @@
   [RAG Evaluation Report](RAG_EVALUATION_REPORT.md)，汇总历史受控实验、失败案例与接入决策。
 - Stage 6.4：**Completed**；`8554491` 新增
   [5 分钟 Demo Guide](DEMO_GUIDE.md)，覆盖演示主线、费用授权、故障恢复与 Gateway 展示边界。
-- Stage 6.5：**Completed in the current documentation checkpoint**；新增
+- Stage 6.5：**Completed**；`c773d05` 新增
   [Interview Guide](INTERVIEW_GUIDE.md)，提供事实有界的项目介绍、追问答案和技术难点表达。
-- 待完成：Stage 6.6 最终 Review 与全量验证。
-- 证据边界：本阶段当前只修改 Markdown，不代表 Docker、真实 Provider 或生产验收通过。
+- Stage 6.6：**Completed in the final report commit**；新增 [Stage 6 Completion Report](stage6-completion-report.md)，
+  最终全量自动化 `434/434`，并完成代码、文档、部署定义和敏感路径 Review。
+- 证据边界：除文档外只修正 `.gitignore` 与 Compose 镜像标识；未验证 Docker、真实 Provider 或生产环境。
 
 ## 3. 当前正式主链路
 

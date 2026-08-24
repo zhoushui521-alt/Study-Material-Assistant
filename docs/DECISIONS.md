@@ -296,7 +296,7 @@ Revisit Trigger: 需要 Claude/Anthropic、多个凭据/组织级凭据、真实
 Decision: Stage 6 只整理、验证和解释 Stage 0～5.5 已有能力，输出最终架构、工程上下文、
 评测汇总、Demo、面试材料和最终质量报告；不新增核心业务功能或基础设施。
 
-Status: Accepted in Stage 6。
+Status: Accepted and completed in `study-material-v2-stage6-final`。
 
 Background: 当前系统已经包含正式 RAG、Evidence/Citation、Retrieval Evaluation、
 Tutor/Study Workflow、身份与用户隔离、异步 Job、部署定义、Observability 和 Model Gateway。
@@ -315,8 +315,8 @@ Trade-off: Stage 6 的业务代码量可能接近零，也不会把项目自动�
 真实 Provider、并发负载、备份恢复、公开安全和 Claim-level Faithfulness/Citation Accuracy
 若没有新证据，仍必须列为未验证。
 
-Evidence: `docs/PROJECT_STATUS.md`、`docs/FINAL_ARCHITECTURE.md`、Stage 3～5 Completion
-Reports、正式调用链和 Stage 5.5 全量 `434/434` 自动化基线。
+Evidence: [Stage 6 Completion Report](stage6-completion-report.md)、Final Architecture、Stage 3～5
+Completion Reports、正式调用链与 Stage 6 最终全量 `434/434` 自动化回归。
 
 Revisit Trigger: 出现可复现的回答质量缺陷、真实多实例/吞吐需求、明确外部集成场景或运维 SLO，
 并且现有结构无法用更小改动满足时，再为具体问题立项。

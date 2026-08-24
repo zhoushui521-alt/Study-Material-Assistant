@@ -14,6 +14,7 @@
 - [RAG_EVALUATION_REPORT](docs/RAG_EVALUATION_REPORT.md)：Stage 2～3 的受控实验汇总、失败案例与正式接入决策；
 - [DEMO_GUIDE](docs/DEMO_GUIDE.md)：五分钟演示脚本、费用边界、故障恢复和完成清单；
 - [INTERVIEW_GUIDE](docs/INTERVIEW_GUIDE.md)：项目介绍、RAG/Agent/工程追问、技术难点和证据边界；
+- [STAGE6_COMPLETION_REPORT](docs/stage6-completion-report.md)：最终验证、Review、修复项与证据边界；
 - [DEVELOPMENT_GUIDE](docs/DEVELOPMENT_GUIDE.md)：本地开发、验证、数据、安全和 Git 工作流。
 
 README 保留项目介绍与运行方式；阶段状态发生变化时，以 `PROJECT_STATUS.md` 及其链接的 Git Tag、Completion Report 和代码证据为准。
@@ -783,19 +784,18 @@ python -m pip check
 node --check web\static\app.js
 ```
 
-## 后续开发阶段清单
+## 能力演进与当前边界
 
-以下状态以当前工作区代码、自动测试、已有真实评测报告和用户提供的本地运行
-截图为准。显式 LCEL 固定问答管道、受限 Crawl4AI 网页预览、单个受限 LangChain Agent
-和自定义 LangGraph 学习规划工作流已经实现。LCEL 只重组固定问答流程；动态工具选择
-属于阶段 6 Agent；状态、条件路由、持久化检查点和人工中断属于阶段 7 LangGraph。
+下表保留项目从教学实现到 V2 工程主链的能力里程碑。它不是当前 V2 Stage 的顺序或状态事实源；
+当前 checkpoint、证据层级和未验证项以 [PROJECT_STATUS](docs/PROJECT_STATUS.md) 为准。
+显式 LCEL、受限 Crawl4AI、单个受限 Agent 和 LangGraph Workflow 均已实现；表中的早期
+“阶段 6/7”等编号只代表历史开发顺序，不能与当前 V2 Stage 6 混用。
 
 状态标记：
 
 - **当前已完成**：已有真实代码和相应验证证据；
-- **下一阶段**：当前优先实施，但本清单不代表已经实现；
-- **后续阶段**：依赖前置能力稳定后再进入；
-- **可选增强**：不纳入第一版完成标准。
+- **历史验证**：表内数字只代表对应 checkpoint，不自动继承为当前真实模型或部署验收；
+- **后续触发**：只有真实问题、规模或评测证据出现后才进入，不按技术清单预排。
 
 ### 当前已完成
 
@@ -820,16 +820,19 @@ node --check web\static\app.js
 | **当前已完成 17：V2 Stage 5.2 异步文档处理** | SQLite Job、单进程后台 Worker、任务状态查询、启动恢复和失败落库；确认索引接口改为返回 `202 + job_id`。 | Fake/Mock 与临时真实 SQLite 覆盖单文件/批量成功、失败、去重、重启继续 pending、处理中断转 failed 和 API 查询。 | 暂存预解析仍同步；stage5-part3 已为 Job 增加所有权，仍没有分布式队列、多实例抢占、自动重试或负载测试。 |
 | **当前已完成 18：V2 Stage 5 / part3 身份与数据隔离** | 邮箱注册登录、scrypt 密码哈希、可撤销服务端 Session、`current_user`、复合外键、每用户资料/Chroma 与 Job/Workflow 所有权。 | 392 项 Fake/Mock/临时 SQLite 回归覆盖认证失败、A/B 数据隔离、Tutor、Material、Vector Retrieval、Citation 来源、Job 与 Workflow IDOR。 | 仍是本地单实例 SQLite；无 OAuth、RBAC、密码重置、登录限流、多实例 Session、数据库加密、生产备份或公开部署验收。 |
 | **当前已完成 19：V2 Stage 5.3 / part4 服务化与部署准备** | 统一 Settings、`app.server`、非 root Dockerfile、单服务 Compose、named volume、Healthcheck、README 与部署边界。 | 新增专项 8/8、全量 400/400；本机 `app.server`、Health、首页和静态资源 HTTP 200；Compose YAML 可解析。 | 当前机器没有 Docker CLI，build/up、容器重启恢复、公开部署、HTTPS、负载与生产备份均未验证。 |
+| **当前已完成 20：V2 Stage 5.4 可观测性** | 统一 JSON 事件、Request ID 跨线程/Job 传播、匿名单进程指标和受鉴权 Metrics API。 | Completion Report、专项测试与全量回归可复核。 | 指标重启清零，无外部 Collector、跨实例聚合、SLO 或生产告警。 |
+| **当前已完成 21：V2 Stage 5.5 Model Gateway** | 正式 RAG/Agent/Tutor 统一 Provider 路由；系统配置与用户 BYOK；Fernet 密文、用户隔离和安全错误映射。 | 代码 checkpoint `d54a90b` 与 [Stage 5.5 Completion Report](docs/stage5-5-completion-report.md)。 | 无自动 Failover、价格表、KMS/HSM、多凭据或公开安全验收。 |
+| **当前已完成 22：V2 Stage 6 作品化收口** | 最终架构、工程上下文、RAG 评测汇总、五分钟 Demo、面试材料和最终质量审查。 | [Stage 6 Completion Report](docs/stage6-completion-report.md) 与 Tag `study-material-v2-stage6-final`。 | 收口和验证不会把本地单实例原型升级为生产系统。 |
 
-### 下一阶段与后续阶段
+### 后续触发条件
 
-| 阶段 | 主要内容 | 完成标志 | 与前一阶段的依赖 / 核心风险与边界 |
-| --- | --- | --- | --- |
-| **下一阶段候选（未开始）：Stage 5.4 Observability** | 仅在确认真实运行目标和故障模式后补充必要日志、指标与运行证据。 | 尚未定义或实施；需等待用户确认下一阶段。 | 不在 Stage 5.3 自动加入 tracing、metrics、云平台或新基础设施。 |
-| **阶段 9（后续阶段）：演示和求职材料** | 补充 README 架构图和完整运行步骤，说明 RAG、LCEL、Crawl4AI、Agent 和 LangGraph 的职责边界；整理评测证据、典型问题、拒答案例、故障定位案例、演示视频和项目讲解。 | 项目可以写入简历；能在面试中讲清需求、架构、取舍、验证和风险；明确区分已实现、已自动化验证、已真实运行和后续规划。 | 依赖部署与证据归档；不得把固定评测案例、原型能力或未上线功能包装成普遍稳定的生产成果。 |
+| 方向 | 当前缺口 | 进入条件 |
+| --- | --- | --- |
+| **Evaluation 深化** | Dataset 小、不可回答失败仍在、缺少稳定 Answer/Faithfulness/claim-level Citation 指标。 | 扩大并冻结独立基准集后，按单变量实验重新评估当前正式链路。 |
+| **生产演进** | 未验证 Docker build/up、并发、长时间、多实例、备份恢复、外部监控、密钥托管和公开安全。 | 先定义真实用户范围、容量、SLO、数据合规与部署目标，再决定 PostgreSQL、外部队列或观测平台。 |
 
-排序遵循“先稳定资料进入和可观测性，再重组固定 RAG 管道，随后增加网页采集和
-动态工具选择，最后才引入有状态工作流”的依赖关系。四类能力的职责不能混用：
+后续不预排固定 Stage，也不按技术清单加入 Multi-Agent、MCP、GraphRAG 或分布式组件。
+现有四类能力的职责仍必须分开：
 
 - **LCEL**：固定、可组合、可测试的 RAG 能力管道；
 - **Crawl4AI**：网页资料采集与 Markdown 预览，不负责回答和流程控制；

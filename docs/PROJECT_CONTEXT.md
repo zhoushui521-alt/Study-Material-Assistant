@@ -19,10 +19,10 @@
 
 - Stage 5.5 代码 checkpoint：`d54a90b`；
 - Stage 5.5 文档收口：`9ac680a`；
-- Stage 6.1 Final Architecture：`c3c39e0`；
-- 当前 Stage 6：Production Readiness & Portfolio，进行中；
+- Stage 6.1～6.5 checkpoints：`c3c39e0`、`826f75a`、`6f63f6a`、`8554491`、`c773d05`；
+- Stage 6：**Completed**；最终 Tag：`study-material-v2-stage6-final`；
 - 当前分支：`main`；本地提交尚未 push；
-- Stage 6 不新增核心业务功能，不引入 Multi-Agent、MCP、GraphRAG、新数据库或微服务。
+- Stage 6 没有新增核心业务功能，没有引入 Multi-Agent、MCP、GraphRAG、新数据库或微服务。
 
 提交、Tag 与工作区可能继续变化，准确边界必须用当前 `git status`、`git log` 和
 `git tag` 重新确认，不能只依赖本文。
