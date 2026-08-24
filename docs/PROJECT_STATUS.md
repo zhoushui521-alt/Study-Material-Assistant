@@ -14,6 +14,7 @@
 - Stage 6.1 Final Architecture checkpoint：`c3c39e0`
 - Stage 6.2 Engineering Documentation checkpoint：`826f75a`
 - Stage 6.3 RAG Evaluation checkpoint：`6f63f6a`
+- Stage 6.4 Demo checkpoint：`8554491`
 - 远程边界：本地提交未 push；公开部署状态不能由本地 Git 推断
 - 证据层级：代码实现、自动化测试、历史本地运行、真实模型实验、生产验证分别记录，不能互相替代
 
@@ -197,9 +198,11 @@
   [Development Guide](DEVELOPMENT_GUIDE.md)，并同步 README、Architecture 与 Decisions。
 - Stage 6.3：**Completed**；`6f63f6a` 新增
   [RAG Evaluation Report](RAG_EVALUATION_REPORT.md)，汇总历史受控实验、失败案例与接入决策。
-- Stage 6.4：**Completed in the current documentation checkpoint**；新增
+- Stage 6.4：**Completed**；`8554491` 新增
   [5 分钟 Demo Guide](DEMO_GUIDE.md)，覆盖演示主线、费用授权、故障恢复与 Gateway 展示边界。
-- 待完成：Stage 6.5 Interview、6.6 最终 Review 与全量验证。
+- Stage 6.5：**Completed in the current documentation checkpoint**；新增
+  [Interview Guide](INTERVIEW_GUIDE.md)，提供事实有界的项目介绍、追问答案和技术难点表达。
+- 待完成：Stage 6.6 最终 Review 与全量验证。
 - 证据边界：本阶段当前只修改 Markdown，不代表 Docker、真实 Provider 或生产验收通过。
 
 ## 3. 当前正式主链路

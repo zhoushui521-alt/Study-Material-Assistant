@@ -13,6 +13,7 @@
 - [EVALUATION](docs/EVALUATION.md)：评测资产、指标、失败分类、费用门槛和运行规范；
 - [RAG_EVALUATION_REPORT](docs/RAG_EVALUATION_REPORT.md)：Stage 2～3 的受控实验汇总、失败案例与正式接入决策；
 - [DEMO_GUIDE](docs/DEMO_GUIDE.md)：五分钟演示脚本、费用边界、故障恢复和完成清单；
+- [INTERVIEW_GUIDE](docs/INTERVIEW_GUIDE.md)：项目介绍、RAG/Agent/工程追问、技术难点和证据边界；
 - [DEVELOPMENT_GUIDE](docs/DEVELOPMENT_GUIDE.md)：本地开发、验证、数据、安全和 Git 工作流。
 
 README 保留项目介绍与运行方式；阶段状态发生变化时，以 `PROJECT_STATUS.md` 及其链接的 Git Tag、Completion Report 和代码证据为准。
