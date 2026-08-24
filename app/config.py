@@ -61,6 +61,61 @@ def _runtime_port(environment: Mapping[str, str]) -> int:
     return port
 
 
+def _runtime_int(
+    environment: Mapping[str, str],
+    key: str,
+    default: str,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    value = _required_runtime_value(environment, key, default)
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise ConfigurationError(f"{key} 必须是整数。") from error
+    if not minimum <= parsed <= maximum:
+        raise ConfigurationError(f"{key} 必须介于 {minimum} 和 {maximum} 之间。")
+    return parsed
+
+
+def _optional_runtime_int(
+    environment: Mapping[str, str],
+    key: str,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int | None:
+    value = environment.get(key, "").strip()
+    if not value:
+        return None
+    return _runtime_int(
+        environment,
+        key,
+        value,
+        minimum=minimum,
+        maximum=maximum,
+    )
+
+
+def _runtime_float(
+    environment: Mapping[str, str],
+    key: str,
+    default: str,
+    *,
+    minimum: float,
+    maximum: float,
+) -> float:
+    value = _required_runtime_value(environment, key, default)
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise ConfigurationError(f"{key} 必须是数字。") from error
+    if not minimum <= parsed <= maximum:
+        raise ConfigurationError(f"{key} 必须介于 {minimum} 和 {maximum} 之间。")
+    return parsed
+
+
 def _runtime_path(
     environment: Mapping[str, str],
     key: str,
@@ -87,6 +142,14 @@ class Settings:
     bailian_embedding_model: str
     bailian_embedding_dimensions: str
     bailian_chat_model: str
+    default_model_provider: str
+    default_model_name: str
+    model_api_key: str = field(repr=False)
+    model_base_url: str
+    model_timeout_seconds: int
+    model_max_tokens: int | None
+    model_temperature: float
+    model_credential_encryption_key: str = field(repr=False)
 
     @classmethod
     def from_mapping(
@@ -95,6 +158,28 @@ class Settings:
         *,
         project_root: Path = PROJECT_ROOT,
     ) -> "Settings":
+        default_model_provider = environment.get(
+            "DEFAULT_PROVIDER",
+            "qwen",
+        ).strip().lower()
+        use_legacy_qwen_config = default_model_provider == "qwen"
+        default_model_name = environment.get("DEFAULT_MODEL", "").strip()
+        model_api_key = environment.get("MODEL_API_KEY", "").strip()
+        model_base_url = environment.get("MODEL_BASE_URL", "").strip()
+        if use_legacy_qwen_config:
+            default_model_name = default_model_name or environment.get(
+                "BAILIAN_CHAT_MODEL",
+                "qwen-plus",
+            ).strip()
+            model_api_key = model_api_key or environment.get(
+                "BAILIAN_API_KEY",
+                "",
+            ).strip()
+            model_base_url = model_base_url or environment.get(
+                "BAILIAN_BASE_URL",
+                "",
+            ).strip()
+
         return cls(
             app_host=_required_runtime_value(
                 environment,
@@ -124,6 +209,34 @@ class Settings:
                 "BAILIAN_CHAT_MODEL",
                 "qwen-plus",
             ).strip(),
+            default_model_provider=default_model_provider,
+            default_model_name=default_model_name,
+            model_api_key=model_api_key,
+            model_base_url=model_base_url.rstrip("/"),
+            model_timeout_seconds=_runtime_int(
+                environment,
+                "MODEL_TIMEOUT",
+                "60",
+                minimum=1,
+                maximum=600,
+            ),
+            model_max_tokens=_optional_runtime_int(
+                environment,
+                "MODEL_MAX_TOKENS",
+                minimum=1,
+                maximum=1_000_000,
+            ),
+            model_temperature=_runtime_float(
+                environment,
+                "MODEL_TEMPERATURE",
+                "0.2",
+                minimum=0.0,
+                maximum=2.0,
+            ),
+            model_credential_encryption_key=environment.get(
+                "MODEL_CREDENTIAL_ENCRYPTION_KEY",
+                "",
+            ).strip(),
         )
 
     @property
@@ -149,6 +262,10 @@ class Settings:
     @property
     def crawl4ai_runtime_dir(self) -> Path:
         return self.data_dir / "crawl4ai_runtime"
+
+    @property
+    def model_credentials_database_path(self) -> Path:
+        return self.data_dir / "model_gateway" / "model_credentials.sqlite3"
 
 
 def get_settings() -> Settings:

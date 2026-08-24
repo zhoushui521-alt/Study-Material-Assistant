@@ -23,7 +23,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 from fastapi.staticfiles import StaticFiles
 from app.auth import (
     AUTH_COOKIE_NAME,
@@ -77,6 +77,17 @@ from app.material_ingestion import (
     StagedMaterial,
 )
 from app.metrics import runtime_metrics
+from app.model_gateway import (
+    ModelAuthenticationError,
+    ModelGateway,
+    ModelGatewayError,
+    ModelSelection,
+    UnsupportedModelProviderError,
+    normalize_api_key,
+    normalize_model_name,
+    normalize_provider,
+    is_model_authentication_error,
+)
 from app.operation_guard import (
     OperationGuard,
     OperationProtectionError,
@@ -182,6 +193,7 @@ class LLMMetricsResponse(BaseModel):
     calls_total: int
     calls_failed: int
     models: list[str]
+    providers: list[str]
     average_duration_ms: float
     token_usage_available_calls: int
     input_tokens_total: int
@@ -325,6 +337,45 @@ class UserResponse(BaseModel):
     display_name: str | None
     created_at: datetime
     updated_at: datetime | None
+
+
+class ModelCredentialUpsertRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str = Field(min_length=2, max_length=32)
+    model_name: str = Field(min_length=1, max_length=120)
+    api_key: SecretStr
+
+    @field_validator("provider")
+    @classmethod
+    def validate_provider(cls, value: str) -> str:
+        return normalize_provider(value)
+
+    @field_validator("model_name")
+    @classmethod
+    def validate_model_name(cls, value: str) -> str:
+        return normalize_model_name(value)
+
+    @field_validator("api_key")
+    @classmethod
+    def validate_api_key(cls, value: SecretStr) -> SecretStr:
+        normalize_api_key(value.get_secret_value())
+        return value
+
+
+class ModelCredentialResponse(BaseModel):
+    byok_configured: bool
+    provider: str
+    model_name: str
+    credential_source: Literal["system", "byok"]
+    supported_providers: list[str]
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class ModelCredentialDeleteResponse(BaseModel):
+    deleted: bool
+    active: ModelCredentialResponse
 
 
 class LearningSessionCreateRequest(BaseModel):
@@ -687,6 +738,7 @@ app.state.user_workspaces_dir = runtime_settings.user_workspaces_dir
 app.state.request_history_writer = RequestHistoryWriter(runtime_settings.request_log_path)
 app.state.operation_guard = OperationGuard()
 app.state.runtime_metrics = runtime_metrics
+app.state.model_gateway = ModelGateway.from_settings(runtime_settings)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -890,7 +942,11 @@ def get_rag_service(
             workspaces_dir=request.app.state.user_workspaces_dir,
         )
         try:
-            service = create_rag_service(workspace.vector_store)
+            service = create_rag_service(
+                workspace.vector_store,
+                model_gateway=request.app.state.model_gateway,
+                user_id=current_user.user_id,
+            )
         except RAGServiceInitializationError as error:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -1237,8 +1293,18 @@ def raise_web_material_http_error(error: Exception) -> None:
     raise error
 
 
+def raise_model_authentication_http_error(error: Exception) -> None:
+    """将包装后的 Provider 认证失败映射为统一且不泄露上游详情的响应。"""
+    if is_model_authentication_error(error):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Model authentication failed.",
+        ) from error
+
+
 def raise_study_workflow_http_error(error: Exception) -> None:
     """映射工作流状态错误，不泄露检查点路径、正文或内部异常。"""
+    raise_model_authentication_http_error(error)
     if isinstance(error, StudyWorkflowNotFoundError):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1248,6 +1314,36 @@ def raise_study_workflow_http_error(error: Exception) -> None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="当前学习工作流状态不允许此操作。",
+        ) from error
+    raise error
+
+
+def model_selection_response(
+    gateway: ModelGateway,
+    selection: ModelSelection,
+) -> ModelCredentialResponse:
+    return ModelCredentialResponse(
+        byok_configured=selection.byok_configured,
+        provider=selection.provider,
+        model_name=selection.model_name,
+        credential_source=selection.credential_source,
+        supported_providers=list(gateway.supported_providers),
+        created_at=selection.created_at,
+        updated_at=selection.updated_at,
+    )
+
+
+def raise_model_gateway_http_error(error: Exception) -> None:
+    """将模型网关内部错误映射为不泄露密钥或 Provider 正文的响应。"""
+    if isinstance(error, (ValueError, UnsupportedModelProviderError)):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="模型配置无效。",
+        ) from error
+    if isinstance(error, ModelGatewayError):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="模型网关暂不可用。",
         ) from error
     raise error
 
@@ -1445,6 +1541,88 @@ async def get_authenticated_user(
     current_user: Annotated[UserRecord, Depends(get_current_user)],
 ) -> UserResponse:
     return user_response(current_user)
+
+
+@app.get(
+    "/api/model-gateway/credential",
+    response_model=ModelCredentialResponse,
+)
+def get_model_credential(
+    request: Request,
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
+) -> ModelCredentialResponse:
+    gateway: ModelGateway = request.app.state.model_gateway
+    try:
+        selection = gateway.current_selection(current_user.user_id)
+    except Exception as error:
+        raise_model_gateway_http_error(error)
+        raise
+    return model_selection_response(gateway, selection)
+
+
+@app.put(
+    "/api/model-gateway/credential",
+    response_model=ModelCredentialResponse,
+)
+def put_model_credential(
+    payload: ModelCredentialUpsertRequest,
+    request: Request,
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
+) -> ModelCredentialResponse:
+    gateway: ModelGateway = request.app.state.model_gateway
+    try:
+        gateway.save_credential(
+            user_id=current_user.user_id,
+            provider=payload.provider,
+            model_name=payload.model_name,
+            api_key=payload.api_key.get_secret_value(),
+        )
+        invalidate_rag_service(request.app, current_user.user_id)
+        selection = gateway.current_selection(current_user.user_id)
+    except Exception as error:
+        raise_model_gateway_http_error(error)
+        raise
+    log_event(
+        "model_credential_saved",
+        details={
+            "component": "model_gateway",
+            "provider": selection.provider,
+            "model": selection.model_name,
+            "credential_source": selection.credential_source,
+        },
+    )
+    return model_selection_response(gateway, selection)
+
+
+@app.delete(
+    "/api/model-gateway/credential",
+    response_model=ModelCredentialDeleteResponse,
+)
+def delete_model_credential(
+    request: Request,
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
+) -> ModelCredentialDeleteResponse:
+    gateway: ModelGateway = request.app.state.model_gateway
+    try:
+        deleted = gateway.delete_credential(current_user.user_id)
+        invalidate_rag_service(request.app, current_user.user_id)
+        selection = gateway.current_selection(current_user.user_id)
+    except Exception as error:
+        raise_model_gateway_http_error(error)
+        raise
+    log_event(
+        "model_credential_deleted",
+        details={
+            "component": "model_gateway",
+            "provider": selection.provider,
+            "model": selection.model_name,
+            "credential_source": selection.credential_source,
+        },
+    )
+    return ModelCredentialDeleteResponse(
+        deleted=deleted,
+        active=model_selection_response(gateway, selection),
+    )
 
 
 @app.get(
@@ -1850,6 +2028,11 @@ def ask_documents(
     except OperationProtectionError as error:
         raise_operation_http_error(error)
         raise
+    except ModelAuthenticationError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Model authentication failed.",
+        ) from error
     except LangChainRAGError as error:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -1906,6 +2089,9 @@ async def run_agent(
             detail="Agent 处理超时。",
         ) from error
     except AgentExecutionError as error:
+        if is_model_authentication_error(error):
+            request.state.error_category = "model_authentication"
+            raise_model_authentication_http_error(error)
         request.state.error_category = "agent_processing"
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -1959,6 +2145,9 @@ async def tutor_chat(
         raise_learning_data_http_error(error)
         raise
     except TutorExecutionError as error:
+        if is_model_authentication_error(error):
+            request.state.error_category = "model_authentication"
+            raise_model_authentication_http_error(error)
         request.state.error_category = "tutor_processing"
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

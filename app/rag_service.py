@@ -11,15 +11,12 @@ from langchain_core.retrievers import BaseRetriever
 from langchain_core.runnables import Runnable
 
 if __package__:
-    from app.chat_client import ChatConfig
+    from app.config import get_settings
     from app.context_selector import ContextSelector, EvidenceScoreContextSelector
     from app.embedding_client import EmbeddingConfig
     from app.hybrid_search import HybridRetriever
-    from app.langchain_rag import (
-        RAGAnswer,
-        create_langchain_chat_model,
-        create_rag_chain,
-    )
+    from app.langchain_rag import RAGAnswer, create_rag_chain
+    from app.model_gateway import ModelGateway
     from app.observability import log_event
     from app.langchain_store import (
         VECTOR_STORE_DIR,
@@ -32,15 +29,12 @@ if __package__:
         check_index_compatibility,
     )
 else:
-    from chat_client import ChatConfig
+    from config import get_settings
     from context_selector import ContextSelector, EvidenceScoreContextSelector
     from embedding_client import EmbeddingConfig
     from hybrid_search import HybridRetriever
-    from langchain_rag import (
-        RAGAnswer,
-        create_langchain_chat_model,
-        create_rag_chain,
-    )
+    from langchain_rag import RAGAnswer, create_rag_chain
+    from model_gateway import ModelGateway
     from observability import log_event
     from langchain_store import (
         VECTOR_STORE_DIR,
@@ -130,8 +124,11 @@ class RAGService:
 
 def create_rag_service(
     persist_directory: Path = VECTOR_STORE_DIR,
+    *,
+    model_gateway: ModelGateway | None = None,
+    user_id: str | None = None,
 ) -> RAGService:
-    """从环境配置和本地 Chroma 索引构造正式 RAG 服务。"""
+    """从环境配置、本地 Chroma 与 Model Gateway 构造正式 RAG 服务。"""
     vector_store = None
     try:
         embedding_config = EmbeddingConfig.from_environment()
@@ -162,7 +159,8 @@ def create_rag_service(
             adjacent_window=ADJACENT_WINDOW,
             context_limit=CONTEXT_LIMIT,
         )
-        chat_model = create_langchain_chat_model(ChatConfig.from_environment())
+        gateway = model_gateway or ModelGateway.from_settings(get_settings())
+        chat_model = gateway.create_chat_model(user_id)
         return RAGService(
             vector_store=vector_store,
             retriever=retriever,

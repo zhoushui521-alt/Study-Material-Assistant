@@ -18,6 +18,7 @@ from app.api import (
     get_agent_service_provider,
     invalidate_rag_service,
 )
+from app.model_gateway import ModelAuthenticationError
 from app.operation_guard import OperationGuard, OperationPolicy
 from app.rag_service import RAGService
 from app.request_history import RequestHistoryWriter
@@ -146,6 +147,29 @@ class AgentAPITests(unittest.TestCase):
         self.assertEqual(response.status_code, 502)
         self.assertEqual(response.json(), {"detail": "Agent 处理失败。"})
         self.assertNotIn("secret-value", response.text)
+
+    def test_wrapped_model_authentication_failure_returns_stable_502(self) -> None:
+        service = self.make_service()
+        authentication_error = ModelAuthenticationError(
+            "provider detail must not escape"
+        )
+        wrapped_error = AgentExecutionError("Agent 处理失败。")
+        wrapped_error.__cause__ = authentication_error
+        service.ask.side_effect = wrapped_error
+        app.dependency_overrides[get_agent_service_provider] = lambda: lambda: service
+
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/agent",
+                json={"message": "列出资料", "confirm_api_cost": True},
+            )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(
+            response.json(),
+            {"detail": "Model authentication failed."},
+        )
+        self.assertNotIn("provider detail", response.text)
 
     def test_agent_rate_limit_prevents_extra_service_call(self) -> None:
         service = self.make_service()

@@ -20,6 +20,7 @@ class RuntimeMetricsTests(unittest.TestCase):
         )
         metrics.record_llm(
             model="qwen-test",
+            provider="qwen",
             duration_ms=40,
             token_usage_available=True,
             input_tokens=8,
@@ -28,6 +29,7 @@ class RuntimeMetricsTests(unittest.TestCase):
         )
         metrics.record_llm(
             model="qwen-test",
+            provider="qwen",
             duration_ms=60,
             failed=True,
         )
@@ -61,6 +63,7 @@ class RuntimeMetricsTests(unittest.TestCase):
         self.assertEqual(snapshot["llm"]["calls_total"], 2)
         self.assertEqual(snapshot["llm"]["calls_failed"], 1)
         self.assertEqual(snapshot["llm"]["models"], ["qwen-test"])
+        self.assertEqual(snapshot["llm"]["providers"], ["qwen"])
         self.assertEqual(snapshot["llm"]["average_duration_ms"], 50.0)
         self.assertEqual(snapshot["llm"]["token_usage_available_calls"], 1)
         self.assertEqual(snapshot["llm"]["input_tokens_total"], 8)
@@ -96,6 +99,8 @@ class RuntimeMetricsTests(unittest.TestCase):
             metrics.record_retrieval(retrieved_count=-1, duration_ms=1)
         with self.assertRaises(ValueError):
             metrics.record_llm(model="", duration_ms=1)
+        with self.assertRaises(ValueError):
+            metrics.record_llm(model="qwen-test", provider="", duration_ms=1)
         with self.assertRaises(ValueError):
             metrics.record_document_job(status="processing", duration_ms=1)
 

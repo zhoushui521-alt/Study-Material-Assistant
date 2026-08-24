@@ -54,6 +54,7 @@ class RuntimeMetrics:
             self._output_tokens = 0
             self._total_tokens = 0
             self._models: set[str] = set()
+            self._providers: set[str] = set()
             self._document_completed = 0
             self._document_failed = 0
             self._document_duration_ms = 0
@@ -92,6 +93,7 @@ class RuntimeMetrics:
         self,
         *,
         model: str,
+        provider: str = "unknown",
         duration_ms: int,
         failed: bool = False,
         token_usage_available: bool = False,
@@ -102,6 +104,8 @@ class RuntimeMetrics:
         _non_negative_int(duration_ms, field="duration_ms")
         if not isinstance(model, str) or not model.strip():
             raise ValueError("model 不能为空。")
+        if not isinstance(provider, str) or not provider.strip():
+            raise ValueError("provider 不能为空。")
         token_values = {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
@@ -114,6 +118,7 @@ class RuntimeMetrics:
             self._llm_total += 1
             self._llm_duration_ms += duration_ms
             self._models.add(model.strip()[:160])
+            self._providers.add(provider.strip()[:160])
             if failed:
                 self._llm_failed += 1
             if token_usage_available:
@@ -170,6 +175,7 @@ class RuntimeMetrics:
                     "calls_total": llm_total,
                     "calls_failed": self._llm_failed,
                     "models": sorted(self._models),
+                    "providers": sorted(self._providers),
                     "average_duration_ms": _average(
                         self._llm_duration_ms, llm_total
                     ),

@@ -17,12 +17,15 @@ from langchain_core.runnables import (
     RunnableParallel,
     RunnablePassthrough,
 )
-from langchain_openai import ChatOpenAI
-
 if __package__:
     from app.chat_client import ChatConfig
     from app.context_selector import BaselineContextSelector, ContextSelector
     from app.metrics import runtime_metrics
+    from app.model_gateway import ModelAuthenticationError
+    from app.model_gateway.providers import (
+        ModelRoute,
+        OpenAICompatibleProviderAdapter,
+    )
     from app.observability import invoke_observed_model, log_event
     from app.evidence import (
         Citation,
@@ -34,6 +37,8 @@ else:
     from chat_client import ChatConfig
     from context_selector import BaselineContextSelector, ContextSelector
     from metrics import runtime_metrics
+    from model_gateway import ModelAuthenticationError
+    from model_gateway.providers import ModelRoute, OpenAICompatibleProviderAdapter
     from observability import invoke_observed_model, log_event
     from evidence import (
         Citation,
@@ -147,15 +152,19 @@ class RAGAnswer:
     citations: tuple[Citation, ...] = ()
 
 
-def create_langchain_chat_model(config: ChatConfig) -> ChatOpenAI:
-    """用百炼的 OpenAI 兼容地址创建 LangChain ChatModel。"""
-    return ChatOpenAI(
-        api_key=config.api_key,
-        base_url=config.base_url,
-        model=config.model,
-        temperature=0.2,
-        timeout=60,
-        max_retries=2,
+def create_langchain_chat_model(config: ChatConfig) -> BaseChatModel:
+    """兼容离线评测入口；具体 SDK 构造委托给 Provider Adapter。"""
+    return OpenAICompatibleProviderAdapter().create_chat_model(
+        ModelRoute(
+            provider="openai_compatible",
+            model_name=config.model,
+            api_key=config.api_key,
+            base_url=config.base_url,
+            temperature=0.2,
+            timeout_seconds=60,
+            max_tokens=None,
+            credential_source="system",
+        )
     )
 
 
@@ -321,6 +330,8 @@ def _invoke_chat_model(
             prompt_value,
             component="rag",
         )
+    except ModelAuthenticationError:
+        raise
     except Exception as error:
         raise LangChainRAGError("调用 Chat 模型失败。") from error
 

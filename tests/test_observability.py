@@ -7,6 +7,7 @@ from unittest.mock import Mock
 from langchain_core.messages import AIMessage
 
 from app.metrics import runtime_metrics
+from app.model_gateway import ModelAuthenticationError
 from app.observability import (
     OBSERVABILITY_LOGGER_NAME,
     JsonLogFormatter,
@@ -109,8 +110,11 @@ class ObservabilityLoggingTests(unittest.TestCase):
         self.assertIsNone(outside["user_id"])
 
     def test_model_invoke_records_available_token_usage(self) -> None:
+        runtime_metrics.reset()
         model = Mock()
         model.model_name = "qwen-test"
+        model._model_gateway_provider = "qwen"
+        model._model_gateway_credential_source = "byok"
         result = AIMessage(
             content="answer",
             usage_metadata={
@@ -138,11 +142,46 @@ class ObservabilityLoggingTests(unittest.TestCase):
             ["llm_call_started", "llm_call_completed"],
         )
         self.assertEqual(payloads[-1]["model"], "qwen-test")
+        self.assertEqual(payloads[-1]["provider"], "qwen")
+        self.assertEqual(payloads[-1]["credential_source"], "byok")
         self.assertEqual(payloads[-1]["input_tokens"], 4)
         self.assertEqual(payloads[-1]["output_tokens"], 2)
         self.assertEqual(payloads[-1]["total_tokens"], 6)
         self.assertTrue(payloads[-1]["token_usage_available"])
         self.assertTrue(all(item["request_id"] == "request-2" for item in payloads))
+
+    def test_authentication_failure_is_normalized_without_secret_or_prompt(self) -> None:
+        class ProviderAuthenticationFailure(RuntimeError):
+            status_code = 401
+
+        runtime_metrics.reset()
+        model = Mock()
+        model.model_name = "deepseek-test"
+        model._model_gateway_provider = "deepseek"
+        model._model_gateway_credential_source = "byok"
+        model.invoke.side_effect = ProviderAuthenticationFailure(
+            "api_key=sk-provider-secret"
+        )
+
+        with self.assertLogs(OBSERVABILITY_LOGGER_NAME, level="ERROR") as captured:
+            with self.assertRaises(ModelAuthenticationError):
+                invoke_observed_model(
+                    model,
+                    "private prompt content",
+                    component="rag",
+                )
+
+        serialized = captured.records[-1].getMessage()
+        payload = json.loads(serialized)
+        self.assertEqual(payload["event"], "llm_call_failed")
+        self.assertEqual(payload["provider"], "deepseek")
+        self.assertEqual(payload["credential_source"], "byok")
+        self.assertNotIn("sk-provider-secret", serialized)
+        self.assertNotIn("private prompt content", serialized)
+        self.assertEqual(
+            runtime_metrics.snapshot()["llm"]["providers"],
+            ["deepseek"],
+        )
 
     def test_model_failure_log_does_not_include_exception_detail(self) -> None:
         runtime_metrics.reset()

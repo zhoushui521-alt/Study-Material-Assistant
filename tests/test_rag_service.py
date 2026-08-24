@@ -26,8 +26,6 @@ class RAGServiceTests(unittest.TestCase):
         return_value=IndexCompatibilityStatus.COMPATIBLE,
     )
     @patch("app.rag_service.HybridRetriever")
-    @patch("app.rag_service.create_langchain_chat_model")
-    @patch("app.rag_service.ChatConfig.from_environment")
     @patch("app.rag_service.open_vector_store")
     @patch("app.rag_service.create_langchain_embeddings")
     @patch("app.rag_service.EmbeddingConfig.from_environment")
@@ -36,25 +34,26 @@ class RAGServiceTests(unittest.TestCase):
         embedding_config_from_environment: Mock,
         create_embeddings: Mock,
         open_store: Mock,
-        chat_config_from_environment: Mock,
-        create_chat_model: Mock,
         hybrid_retriever: Mock,
         check_index_compatibility: Mock,
     ) -> None:
         vector_store = Mock()
         vector_store.get.return_value = {"ids": ["document-id"]}
         open_store.return_value = vector_store
+        model_gateway = Mock()
 
-        service = create_rag_service()
+        service = create_rag_service(
+            model_gateway=model_gateway,
+            user_id="11111111-1111-4111-8111-111111111111",
+        )
 
         embedding_config_from_environment.assert_called_once_with()
         create_embeddings.assert_called_once_with(
             embedding_config_from_environment.return_value
         )
         open_store.assert_called_once_with(create_embeddings.return_value, VECTOR_STORE_DIR)
-        chat_config_from_environment.assert_called_once_with()
-        create_chat_model.assert_called_once_with(
-            chat_config_from_environment.return_value
+        model_gateway.create_chat_model.assert_called_once_with(
+            "11111111-1111-4111-8111-111111111111"
         )
         hybrid_retriever.assert_called_once_with(
             vector_store=vector_store,

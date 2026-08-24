@@ -13,6 +13,7 @@ from time import perf_counter
 from typing import TextIO
 
 from app.metrics import runtime_metrics
+from app.model_gateway import ModelAuthenticationError, is_model_authentication_error
 
 
 SERVICE_NAME = "zhixing"
@@ -23,6 +24,7 @@ _ALLOWED_DETAIL_FIELDS = frozenset(
     {
         "component",
         "count",
+        "credential_source",
         "empty_retrieval",
         "error_category",
         "error_type",
@@ -34,6 +36,7 @@ _ALLOWED_DETAIL_FIELDS = frozenset(
         "operation",
         "output_tokens",
         "path",
+        "provider",
         "retrieved_count",
         "status_code",
         "token_usage_available",
@@ -150,6 +153,18 @@ def model_identifier(model: object) -> str:
     return type(model).__name__
 
 
+def provider_identifier(model: object) -> str:
+    """读取网关附加的非敏感 Provider 标识。"""
+    value = getattr(model, "_model_gateway_provider", None)
+    return _safe_text(value) if isinstance(value, str) else "unknown"
+
+
+def credential_source_identifier(model: object) -> str | None:
+    """只允许 system/byok 枚举进入日志。"""
+    value = getattr(model, "_model_gateway_credential_source", None)
+    return value if value in {"system", "byok"} else None
+
+
 def token_usage_details(result: object) -> dict[str, object]:
     """兼容 LangChain 常见 usage 位置；不可获得时明确标记而不估算。"""
     usage = getattr(result, "usage_metadata", None)
@@ -190,20 +205,28 @@ def invoke_observed_model(
     *,
     component: str,
     model_name: str | None = None,
+    provider_name: str | None = None,
 ) -> object:
     """保持原 invoke 契约，只在调用边界增加耗时、错误与 usage 事件。"""
     identifier = model_name or model_identifier(model)
+    provider = provider_name or provider_identifier(model)
+    credential_source = credential_source_identifier(model)
+    details: dict[str, object] = {
+        "component": component,
+        "model": identifier,
+        "provider": provider,
+    }
+    if credential_source is not None:
+        details["credential_source"] = credential_source
     started = perf_counter()
-    log_event(
-        "llm_call_started",
-        details={"component": component, "model": identifier},
-    )
+    log_event("llm_call_started", details=details)
     try:
         result = model.invoke(input_value)
     except Exception as error:
         duration_ms = round((perf_counter() - started) * 1000)
         runtime_metrics.record_llm(
             model=identifier,
+            provider=provider,
             duration_ms=duration_ms,
             failed=True,
         )
@@ -212,16 +235,18 @@ def invoke_observed_model(
             level=logging.ERROR,
             duration_ms=duration_ms,
             details={
-                "component": component,
-                "model": identifier,
+                **details,
                 "error_type": type(error).__name__,
             },
         )
+        if is_model_authentication_error(error):
+            raise ModelAuthenticationError("Model authentication failed.") from error
         raise
     duration_ms = round((perf_counter() - started) * 1000)
     usage = token_usage_details(result)
     runtime_metrics.record_llm(
         model=identifier,
+        provider=provider,
         duration_ms=duration_ms,
         token_usage_available=bool(usage["token_usage_available"]),
         input_tokens=usage.get("input_tokens"),
@@ -232,8 +257,7 @@ def invoke_observed_model(
         "llm_call_completed",
         duration_ms=duration_ms,
         details={
-            "component": component,
-            "model": identifier,
+            **details,
             **usage,
         },
     )
