@@ -8,8 +8,10 @@
 - 分支：`main`
 - Stage 5.3 起点：`29e7c7e4e11781e26d8cf0dc3a523b83efe6acbd`
 - Stage 5.4 起点：`6f0e770`（`study-material-v2-stage5-part4`）
-- 当前 checkpoint：Stage 5.4 Completion Report 所在本地提交（本阶段未创建 Tag）
-- 远程边界：本地 checkpoint 未 push；公开部署状态不能由本地 Git 推断
+- Stage 5.5 起点：`e141e95`（Stage 5.4 收口提交）
+- Stage 5.5 代码 checkpoint：`d54a90b`；本阶段未单独创建 Tag
+- 当前 checkpoint：Stage 5.5 文档收口提交；准确 commit 以当前 Git history 为准
+- 远程边界：本地提交未 push；公开部署状态不能由本地 Git 推断
 - 证据层级：代码实现、自动化测试、历史本地运行、真实模型实验、生产验证分别记录，不能互相替代
 
 状态含义：
@@ -26,7 +28,7 @@
 
 当前定位是**本地单实例、具备较完整工程边界的 AI 学习应用原型**，不是生产级分布式系统。当前没有 PostgreSQL、Redis、Celery、分布式 Worker、多实例共享 Session、公开部署或生产负载验收。
 
-## 2. 已完成阶段
+## 2. 阶段状态
 
 ### Stage 0：Architecture Audit
 
@@ -159,6 +161,28 @@
   日志关联；Retrieval / LLM 调用为 0，验证后临时数据已删除。
 - 证据：[Stage 5.4 Completion Report](stage5-4-completion-report.md)
 
+#### Stage 5.5：BYOK + Model Gateway
+
+- 状态：**Completed（代码、自动化、Review 与本地 Git checkpoint 已完成）**
+- 起点：`e141e95`；代码 checkpoint：`d54a90b`；未单独创建 Stage 5.5 Tag。
+- 已实现：进程内 `ModelGateway`、确定性 BYOK-first Router、Provider Adapter Registry、
+  OpenAI-compatible Adapter、统一 Model Settings，以及认证后的凭据元数据查询/密文保存/删除。
+- 正式接入：`RAGService` 按 `current_user` 从网关取得 `BaseChatModel`；Agent 与 Tutor
+  继续复用该 RAG 模型。Retrieval、Context、Prompt、Evidence/Citation、Agent 决策、Tutor
+  Workflow 与 Evaluation 指标未改变。
+- 安全：每用户一条活跃凭据；Fernet 密文写入独立 SQLite；主密钥只从环境读取；API 与日志
+  不返回 Key；用户不能提交任意 Base URL；无法解密或认证失败时不静默使用系统 Key。
+- Observability：模型事件和进程指标增加 Provider；日志增加受限的
+  `credential_source=system/byok`，继续记录模型、耗时、成功/失败和返回可用时的 token usage。
+- 当前 Provider：`qwen`、`deepseek`、`openai`、`openai_compatible`；均通过当前
+  OpenAI-compatible Adapter。Claude/Anthropic 尚未实现。
+- 自动验证：Stage 5.5 核心/安全/配置/观测专项 `29/29`；最终 44 个 `test_*.py` 模块
+  全量 Fake/Mock/临时 SQLite 回归 `434/434`，无失败、错误或跳过。
+- 证据边界：没有真实 Provider/ChatModel/Embedding/Reranker 调用，没有 Docker、浏览器、
+  并发、负载、主密钥轮换、货币成本核算或生产安全验收。早期教学 `app/chat_client.py`
+  不属于正式 V2 API 调用链，仍保留历史直连实现。
+- 证据：[Stage 5.5 Completion Report](stage5-5-completion-report.md)
+
 ## 3. 当前正式主链路
 
 当前正式 RAG 仍是 Stage 2 Retrieval baseline，加上 Stage 3.4 Context Selector：
@@ -175,7 +199,9 @@
   → Top 3 Seed + 同源相邻扩展
   → EvidenceScoreContextSelector
   → Evidence Map
-  → LCEL Prompt / ChatModel
+  → LCEL Prompt
+  → Model Gateway（当前用户 BYOK，否则系统默认）
+  → Provider Adapter / ChatModel
   → 服务端校验 Citation ID 并回填 metadata
   → Answer
 ```
@@ -184,8 +210,11 @@ BM25 + RRF、Cross-Encoder 和 Structure-aware Chunking 都是已完成、可复
 
 ## 4. 未开始与未验证
 
-- **Planned：BYOK。** 仍是后续计划，不属于 Stage 5.4 已实现能力。
-- **未验证：** Docker build/up、容器重启恢复、真实 Tutor 全路径质量、当前认证版本的真实付费 RAG 闭环、并发/负载、长时间运行、多实例一致性、生产备份恢复和公开安全验收。
+- **未实现：** Claude/Anthropic 原生 Adapter、多凭据、复杂任务 Router、自动 Provider
+  故障切换、价格表/货币成本计算、流式产品 API、KMS/HSM 与主密钥轮换流程。
+- **未验证：** Docker build/up、容器重启恢复、真实 Provider 与 Tutor 全路径质量、当前
+  认证版本的真实付费 RAG 闭环、并发/负载、长时间运行、多实例一致性、凭据备份恢复和公开
+  安全验收。
 
 ## 5. 持续同步规则
 

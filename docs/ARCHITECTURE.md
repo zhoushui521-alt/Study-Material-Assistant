@@ -1,7 +1,8 @@
 # Study Material Assistant V2 · Architecture
 
-本文以 `study-material-v2-stage5-part4` 为 Stage 5.4 起点，并同步当前进行中的真实实现。
-它仍是具备容器部署定义的单实例原型，不代表生产环境已经部署。
+本文以 `e141e95`（Stage 5.4 收口提交）为 Stage 5.5 起点，并同步
+`d54a90b` 中的 Model Gateway 实现。它仍是具备容器部署定义的单实例原型，
+不代表生产环境已经部署。
 
 ## 1. Frontend
 
@@ -21,6 +22,7 @@
 - 学习数据：Session 与历史；
 - 资料摄取：本地文件与公开网页预览、暂存、确认索引、删除；
 - AI 能力：`/api/ask`、受限 Agent、`/api/tutor/chat`、Study Workflow；
+- 模型资源：用户 BYOK 凭据元数据查询、密文保存、删除和用户级模型路由；
 - 异步任务：创建 Document Job、查询任务状态；
 - 运行边界：输入校验、单进程并发/频率/费用保护、错误映射与安全日志。
 
@@ -55,7 +57,7 @@ EvidenceScoreContextSelector
   ↓
 请求内 Evidence Map（S1、S2……）
   ↓
-LCEL Prompt → ChatModel
+LCEL Prompt → Model Gateway → Provider Adapter → ChatModel
   ↓
 服务端验证回答中的 Evidence ID
   ↓
@@ -75,6 +77,37 @@ LCEL Prompt → ChatModel
 - 正式 Retrieval：Stage 2 Dense + keyword coverage baseline。
 - 正式 Context Construction：Stage 3.4 `EvidenceScoreContextSelector`。
 - 未正式接入：BM25 + Dense + RRF、Cross-Encoder Reranker、Structure-aware Chunking。
+
+### Model Gateway Layer（Stage 5.5）
+
+正式模型调用现在沿用户身份进入同一个进程内网关：
+
+```text
+RAG / Agent / Tutor
+  → 用户级 RAGService
+  → ModelGateway
+       ├─ 已保存 BYOK：读取当前用户密文并解密
+       └─ 未保存 BYOK：使用服务端默认配置
+  → ProviderAdapterRegistry
+  → OpenAICompatibleProviderAdapter
+  → qwen / deepseek / openai / openai_compatible
+```
+
+业务层继续依赖 LangChain `BaseChatModel`，不依赖具体 Provider SDK。这样既保留 LCEL、Agent
+和 Tutor 现有 `invoke` / `stream` 契约，也避免另建一套与 LangChain 重复的 `LLMClient`。
+当前产品 API 仍只提供非流式响应；`stream` 是底层模型契约能力，不是已经验收的流式产品功能。
+
+`qwen`、`deepseek`、`openai` 当前都由 OpenAI-compatible Adapter 转换参数和解析返回；
+`openai_compatible` 只允许使用服务端配置的 `MODEL_BASE_URL`。用户凭据接口不接受任意
+`base_url`，避免把 BYOK 接口变成 SSRF/任意代理入口。Claude/Anthropic 尚未接入，因为其
+原生协议需要独立 Adapter 与依赖，不能仅通过改 Provider 名称冒充已支持。
+
+路由规则是确定性的：有当前用户凭据时使用 BYOK；没有时使用系统凭据。已保存 BYOK 若无法
+解密或认证失败，不会静默回退系统 Key，避免在用户未知情时产生系统费用。保存或删除凭据后，
+只失效该用户的 RAG/Agent/Tutor 缓存，下一次调用重建正确模型实例。
+
+管理接口为认证后的 `GET / PUT / DELETE /api/model-gateway/credential`。响应只返回
+Provider、模型、来源、时间和支持列表，不返回 Key。每位用户当前只能保存一条活跃凭据。
 
 ## 4. Tutor Agent
 
@@ -102,6 +135,8 @@ Tutor 的业务历史、Session topic 与学习记录存放在 SQLite；LangGrap
 - `data/learning/learning.sqlite3`：用户、认证 Session、学习 Session、Conversation、Learning Record，以及 Tutor 的 LangGraph checkpoint。
 - `data/jobs/document_jobs.sqlite3`：Document Job 状态、进度、所有权、安全错误摘要与完成结果；不保存文件正文、Chunk、Prompt、模型输出或密钥。
 - `data/study_workflows/checkpoints.sqlite3`：历史 Study Workflow 的 LangGraph checkpoint。
+- `data/model_gateway/model_credentials.sqlite3`：每用户一条活跃模型凭据；只保存 Provider、
+  模型、Fernet 密文和时间戳，不保存明文 Key。
 
 学习数据库与 Job 数据库使用 `aiosqlite`、WAL 和 `busy_timeout=5000`。当前方案适合本地单实例，不是高并发、多实例或生产灾备方案。
 
@@ -160,10 +195,13 @@ Browser
        ├─ workflow checkpoint SQLite
        ├─ user_workspaces/<uuid>/{documents,pending_uploads,pending_deletions,vector_store}
        ├─ request logs
+       ├─ model gateway credential SQLite
        └─ Crawl4AI runtime
 ```
 
-`app.config.Settings` 统一解析 `APP_HOST`、`APP_PORT`、`APP_DATA_DIR` 和百炼模型配置。
+`app.config.Settings` 统一解析 `APP_HOST`、`APP_PORT`、`APP_DATA_DIR`、Embedding 配置和
+Model Gateway 的 Provider、模型、系统 Key、Base URL、timeout、max tokens、temperature
+与凭据加密主密钥。只有默认 Provider 为 Qwen 时才回退旧百炼 Chat 配置，防止 Key 跨 Provider 发送；Embedding 与 Index Manifest 不变。
 `app.server` 是本地与容器共用启动入口。Compose 在容器内使用 `/app/data`，宿主端口由
 `ZHIXING_PORT` 控制；`.env` 与本地 `data/` 不进入镜像。
 
@@ -185,7 +223,7 @@ HTTP Request
   → ContextVar（asyncio.to_thread 自动复制）
        ├─ RAGService
        │    → Retriever：数量 / 空召回 / latency
-       │    → ChatModel：model / latency / 可获得的 token usage
+       │    → ChatModel：provider / model / credential_source / latency / 可获得的 token usage
        ├─ Tutor
        │    → RAGService 或 Quiz / Summary 结构化模型
        └─ Document Job enqueue：request_id + job_id
@@ -218,6 +256,8 @@ Worker 创建时显式使用空 `Context`，后续 processing/completed/failed �
 管理员 RBAC；已认证用户只能看到不含身份/内容的全局聚合。Stage 5.4 已决定当前不接入
 OpenTelemetry / LangSmith，没有新增依赖、账号、外部数据发送或费用；重评条件见 ADR 9。
 
+Stage 5.5 在该边界上增加 Provider 和凭据来源聚合，但没有维护价格表或直接计算货币成本。
+日志不记录 API Key、Prompt、回答或 Provider 错误正文；认证失败被归一化为稳定错误。
 
 ## 9. 当前部署边界
 
@@ -227,4 +267,6 @@ OpenTelemetry / LangSmith，没有新增依赖、账号、外部数据发送或�
 - 并发与负载能力；
 - 数据库加密、备份恢复和灾难恢复；
 - 公开网络下的 HTTPS、反向代理、登录防护和渗透安全；
-- 生产可观测性与 SLA。
+- 生产可观测性与 SLA；
+- 加密主密钥托管、轮换、备份恢复和多实例共享凭据；
+- 真实 Provider 兼容性、流式 API、货币成本核算与故障切换。

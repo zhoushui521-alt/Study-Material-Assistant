@@ -245,3 +245,48 @@ Stage 5.4 独立临时实例手动验证。
 Revisit Trigger: 出现多个服务或实例、独立 Worker、跨进程 Trace、长期留存、SLO/告警、
 生产 Dashboard，或经批准需要把运行 Trace 与模型质量评测关联。届时应先定义数据分级、采样、
 脱敏、保留期、费用上限和退出方案，再选择 OpenTelemetry Exporter、Collector 或 LangSmith。
+## 10. Stage 5.5 采用进程内 Model Gateway，而不是只在业务接口散落 BYOK
+
+Decision: 在正式 FastAPI / RAG / Agent / Tutor 模型调用前加入进程内 `ModelGateway`、
+确定性 Router、Provider Adapter Registry 与用户凭据存储；不拆微服务，不接外部 LLM
+Gateway 平台。
+
+Status: Accepted and implemented in `d54a90b`；未单独创建 Stage 5.5 Tag。
+
+Background: Stage 5.4 结束时，正式 `RAGService` 仍从固定百炼/OpenAI-compatible 配置创建
+ChatModel。直接在各业务接口增加用户 Key，会把 Provider、凭据选择、参数转换、错误处理和
+观测逻辑复制到 RAG、Agent 与 Tutor，并增加明文泄露和用户隔离遗漏风险。
+
+Options: 在每个 API 中直接处理 BYOK；建立单体内 Model Gateway；立即接入外部模型平台或
+拆分 Gateway 微服务。
+
+Choice: 复用 LangChain `BaseChatModel` 作为业务接口，由 `ModelGateway` 选择“当前用户
+BYOK 或系统默认”，再由 `ProviderAdapterRegistry` 创建具体模型。`qwen`、`deepseek`、
+`openai` 与 `openai_compatible` 当前复用 OpenAI-compatible Adapter；用户不能通过 API
+提交任意 Base URL。
+
+Reason: 该方案在不改变 Retrieval、Context、Prompt、Evidence/Citation、Agent 决策或 Tutor
+Workflow 的前提下，集中 Provider 选择、timeout、max tokens、temperature、认证错误和
+Stage 5.4 观测字段。它保留现有 LCEL/Agent/Tutor 调用契约，不需要重复发明另一套
+`generate/stream` 接口，也不增加网络 hop、独立部署和外部数据发送。
+
+Security Choice: 每位用户当前只保存一条活跃凭据，主键是服务端认证得到的 UUID；
+API Key 使用 Fernet 认证加密后写入独立 SQLite，主密钥只来自
+`MODEL_CREDENTIAL_ENCRYPTION_KEY`。API、日志和模型元数据响应都不返回明文 Key。
+已保存 BYOK 无法解密或认证失败时不静默回退系统 Key；这能避免掩盖密钥问题和产生未授权的
+系统费用。保存/删除只失效该用户模型相关缓存。
+
+Trade-off: 这不是生产密钥管理系统。Fernet 主密钥还没有 KMS/HSM 托管、版本化轮换或灾备
+流程；SQLite 仍是单实例边界。没有实时价格表、货币成本计算、自动故障转移、按任务复杂度
+路由、负载均衡、熔断或流式产品 API。Claude/Anthropic 需要独立原生 Adapter，当前不能宣称
+支持。仓库早期教学 `app/chat_client.py` 仍是非正式 V2 兼容脚本，不在本次正式调用链迁移
+结论内。
+
+Evidence: `app/model_gateway/`、`app/rag_service.py`、认证凭据 API、Provider/模型/凭据来源
+日志与聚合指标，以及最终 `434/434` Fake/Mock/临时 SQLite 自动化回归。没有调用真实
+Embedding、ChatModel、Reranker 或外部网关，因此这些证据不证明真实 Provider 兼容性、回答
+质量、货币成本或生产安全。
+
+Revisit Trigger: 需要 Claude/Anthropic、多个凭据/组织级凭据、真实流式 API、价格版本与预算
+阻断、多 Provider 容灾、多个应用实例、正式主密钥轮换/托管，或观测到当前 Adapter/SQLite
+成为瓶颈时，再分别评估原生 Adapter、定价注册表、共享凭据存储或独立 Gateway。
