@@ -12,6 +12,8 @@ from datetime import UTC, datetime
 from time import perf_counter
 from typing import TextIO
 
+from app.metrics import runtime_metrics
+
 
 SERVICE_NAME = "zhixing"
 OBSERVABILITY_LOGGER_NAME = "zhixing.observability"
@@ -199,10 +201,16 @@ def invoke_observed_model(
     try:
         result = model.invoke(input_value)
     except Exception as error:
+        duration_ms = round((perf_counter() - started) * 1000)
+        runtime_metrics.record_llm(
+            model=identifier,
+            duration_ms=duration_ms,
+            failed=True,
+        )
         log_event(
             "llm_call_failed",
             level=logging.ERROR,
-            duration_ms=round((perf_counter() - started) * 1000),
+            duration_ms=duration_ms,
             details={
                 "component": component,
                 "model": identifier,
@@ -210,13 +218,23 @@ def invoke_observed_model(
             },
         )
         raise
+    duration_ms = round((perf_counter() - started) * 1000)
+    usage = token_usage_details(result)
+    runtime_metrics.record_llm(
+        model=identifier,
+        duration_ms=duration_ms,
+        token_usage_available=bool(usage["token_usage_available"]),
+        input_tokens=usage.get("input_tokens"),
+        output_tokens=usage.get("output_tokens"),
+        total_tokens=usage.get("total_tokens"),
+    )
     log_event(
         "llm_call_completed",
-        duration_ms=round((perf_counter() - started) * 1000),
+        duration_ms=duration_ms,
         details={
             "component": component,
             "model": identifier,
-            **token_usage_details(result),
+            **usage,
         },
     )
     return result

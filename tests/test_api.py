@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import UUID
 from unittest.mock import AsyncMock, Mock, patch
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from docx import Document as WordDocument
 from langchain_core.documents import Document
@@ -15,6 +16,7 @@ from langchain_core.documents import Document
 from app.api import (
     REQUEST_ID_HEADER,
     app,
+    get_current_user,
     get_document_job_service,
     get_material_manager,
     get_rag_service_provider,
@@ -37,6 +39,7 @@ from app.material_ingestion import (
     StagedMaterialFailure,
     StagedMaterial,
 )
+from app.metrics import runtime_metrics
 from app.operation_guard import OperationGuard, OperationPolicy
 from app.observability import OBSERVABILITY_LOGGER_NAME, log_event
 from app.rag_service import RAGService, RAGServiceInitializationError
@@ -75,6 +78,7 @@ class APITests(unittest.TestCase):
         self.temporary_directory = tempfile.TemporaryDirectory()
         app.dependency_overrides.clear()
         install_authenticated_user()
+        runtime_metrics.reset()
         app.state.rag_service = None
         app.state.document_job_service = None
         app.state.operation_guard = OperationGuard()
@@ -97,6 +101,38 @@ class APITests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"status": "ok"})
         create_service.assert_not_called()
+
+    def test_observability_metrics_returns_authenticated_anonymous_snapshot(
+        self,
+    ) -> None:
+        with TestClient(app) as client:
+            health_response = client.get("/health")
+            response = client.get("/api/observability/metrics")
+
+        payload = response.json()
+        serialized = json.dumps(payload, ensure_ascii=False)
+        self.assertEqual(health_response.status_code, 200)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["system"]["requests_total"], 1)
+        self.assertEqual(payload["system"]["requests_succeeded"], 1)
+        self.assertEqual(payload["system"]["requests_failed"], 0)
+        self.assertEqual(payload["retrieval"]["calls_total"], 0)
+        self.assertEqual(payload["llm"]["calls_total"], 0)
+        self.assertNotIn("request_id", serialized)
+        self.assertNotIn("user_id", serialized)
+        self.assertEqual(runtime_metrics.snapshot()["system"]["requests_total"], 2)
+
+    def test_observability_metrics_requires_authentication(self) -> None:
+        def reject_user() -> None:
+            raise HTTPException(status_code=401, detail="authentication required")
+
+        app.dependency_overrides[get_current_user] = reject_user
+
+        with TestClient(app) as client:
+            response = client.get("/api/observability/metrics")
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(runtime_metrics.snapshot()["system"]["requests_failed"], 1)
 
     def test_web_material_service_receives_fake_ip_compatibility_switch(self) -> None:
         request = Mock()

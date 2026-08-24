@@ -149,8 +149,11 @@
 - Stage 5.4.2 已实现：`ContextVar` 贯穿 HTTP、同步线程池、RAG Service、Retriever、
   RAG ChatModel 与 Tutor 结构化模型调用；LLM usage 仅在返回可用时记录。Document Job
   入队事件关联原 `request_id`，长期 Worker 使用空 Context 并以 `job_id` 追踪处理状态。
+- Stage 5.4.3 已实现：线程安全的单进程 `RuntimeMetrics` 聚合 HTTP、Retrieval、LLM 与
+  Document Job 数值指标；`GET /api/observability/metrics` 只向已认证用户返回匿名全局
+  快照，不返回 `request_id`、`user_id` 或内容数据，也不改变 Retrieval Evaluation。
 - 当前验证：改动前全量 `400/400`；5.4.1 专项 `45/45`；5.4.2 Logging / API / RAG /
-  Tutor / Document Job 专项 `97/97`。Metrics 聚合和 Observability 接口尚未实现。
+  Tutor / Document Job 专项 `97/97`；5.4.3 Metrics 集成专项 `102/102`。
 
 ## 3. 当前正式主链路
 
@@ -177,8 +180,8 @@ BM25 + RRF、Cross-Encoder 和 Structure-aware Chunking 都是已完成、可复
 
 ## 4. 未开始与未验证
 
-- **In Progress：Stage 5.4 Observability。** 当前完成 5.4.1 Structured Logging 与 5.4.2 Request Trace。
-- **Planned：Stage 5.4.3～5.4.4 / BYOK。** Metrics 与集成决策仍是计划。
+- **In Progress：Stage 5.4 Observability。** 当前完成 5.4.1 Structured Logging、5.4.2 Request Trace 与 5.4.3 AI Metrics。
+- **Planned：Stage 5.4.4 / BYOK。** OpenTelemetry / LangSmith 集成决策与全阶段收口仍是计划。
 - **未验证：** Docker build/up、容器重启恢复、真实 Tutor 全路径质量、当前认证版本的真实付费 RAG 闭环、并发/负载、长时间运行、多实例一致性、生产备份恢复和公开安全验收。
 
 ## 5. 持续同步规则

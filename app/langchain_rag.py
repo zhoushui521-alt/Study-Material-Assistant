@@ -22,6 +22,7 @@ from langchain_openai import ChatOpenAI
 if __package__:
     from app.chat_client import ChatConfig
     from app.context_selector import BaselineContextSelector, ContextSelector
+    from app.metrics import runtime_metrics
     from app.observability import invoke_observed_model, log_event
     from app.evidence import (
         Citation,
@@ -32,6 +33,7 @@ if __package__:
 else:
     from chat_client import ChatConfig
     from context_selector import BaselineContextSelector, ContextSelector
+    from metrics import runtime_metrics
     from observability import invoke_observed_model, log_event
     from evidence import (
         Citation,
@@ -261,10 +263,16 @@ def _retrieve_documents(
     try:
         documents = retriever.invoke(question)
     except Exception as error:
+        duration_ms = round((perf_counter() - started) * 1000)
+        runtime_metrics.record_retrieval(
+            retrieved_count=0,
+            duration_ms=duration_ms,
+            failed=True,
+        )
         log_event(
             "retrieval_failed",
             level=logging.ERROR,
-            duration_ms=round((perf_counter() - started) * 1000),
+            duration_ms=duration_ms,
             details={
                 "component": "retriever",
                 "error_type": type(error).__name__,
@@ -272,9 +280,14 @@ def _retrieve_documents(
         )
         raise LangChainRAGError("检索资料失败。") from error
     result = list(documents or [])
+    duration_ms = round((perf_counter() - started) * 1000)
+    runtime_metrics.record_retrieval(
+        retrieved_count=len(result),
+        duration_ms=duration_ms,
+    )
     log_event(
         "retrieval_completed",
-        duration_ms=round((perf_counter() - started) * 1000),
+        duration_ms=duration_ms,
         details={
             "component": "retriever",
             "retrieved_count": len(result),

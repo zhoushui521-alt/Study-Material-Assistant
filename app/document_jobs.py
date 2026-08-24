@@ -23,6 +23,7 @@ from app.material_ingestion import (
     MaterialRollbackError,
     MaterialSyncResult,
 )
+from app.metrics import runtime_metrics
 from app.observability import log_event
 from app.operation_guard import OperationGuard, OperationProtectionError
 
@@ -571,11 +572,16 @@ class DocumentJobService:
             if isinstance(error, MaterialRollbackError):
                 self._invalidate_rag(job.user_id)
             await self.store.mark_failed(job.job_id, _safe_job_error(error))
+            duration_ms = round((perf_counter() - started) * 1000)
+            runtime_metrics.record_document_job(
+                status="failed",
+                duration_ms=duration_ms,
+            )
             log_event(
                 "document_job_failed",
                 level=logging.ERROR,
                 user_id=job.user_id,
-                duration_ms=round((perf_counter() - started) * 1000),
+                duration_ms=duration_ms,
                 details={
                     "component": "document_job_service",
                     "job_id": job.job_id,
@@ -586,10 +592,15 @@ class DocumentJobService:
             return
         self._invalidate_rag(job.user_id)
         await self.store.mark_completed(job.job_id, result)
+        duration_ms = round((perf_counter() - started) * 1000)
+        runtime_metrics.record_document_job(
+            status="completed",
+            duration_ms=duration_ms,
+        )
         log_event(
             "document_job_completed",
             user_id=job.user_id,
-            duration_ms=round((perf_counter() - started) * 1000),
+            duration_ms=duration_ms,
             details={
                 "component": "document_job_service",
                 "job_id": job.job_id,

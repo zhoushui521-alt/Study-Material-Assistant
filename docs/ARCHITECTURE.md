@@ -177,7 +177,7 @@ SQLite。Compose network 只为部署定义清楚边界，不代表存在微服�
 
 ## 8. Observability Layer（Stage 5.4 In Progress）
 
-Stage 5.4.1～5.4.2 已建立标准库结构化日志与 Request Trace：
+Stage 5.4.1～5.4.3 已建立结构化日志、Request Trace 与单进程运行指标：
 
 ```text
 HTTP Request
@@ -190,6 +190,10 @@ HTTP Request
        │    → RAGService 或 Quiz / Summary 结构化模型
        └─ Document Job enqueue：request_id + job_id
              → 独立空 Context Worker：job_id + status + latency
+             ↓
+RuntimeMetrics（只聚合数值，不保存事件明细）
+  → System / Retrieval / LLM / Document Processing
+  → GET /api/observability/metrics（认证后匿名全局快照）
 ```
 
 每条控制台事件固定包含 `time`、`level`、`service`、`request_id`、`user_id`、
@@ -201,12 +205,18 @@ Document Job 是 HTTP 之外的异步生命周期：入队事件保留原 `reque
 Worker 创建时显式使用空 `Context`，后续 processing/completed/failed 只通过 `job_id`
 关联，避免把长期后台任务错误归属于创建 Worker 的首个请求。
 
+`RuntimeMetrics` 使用线程锁累计当前 Python 进程中的请求总数、成功/错误率、平均 HTTP
+耗时、召回数量/空召回/耗时、模型/耗时/可获得的 token usage，以及文档任务成功/失败/平均
+耗时。失败的 Retrieval 计入调用和耗时但不计入空召回；HTTP `status_code < 400` 计为
+成功。Metrics 请求在响应完成后才计数，因此当前快照不包含正在查询快照的这一次请求。
+
 `RequestHistoryWriter` 不是完整 Trace Store：它继续轮转保存最小 HTTP 完成记录，且拒绝
 问题、回答、文件正文、Prompt、密钥、任意未知路径与 URL 查询参数。控制台 Logger 同样只
 接纳白名单详情字段。
 
-尚未实现：进程内 Metrics 聚合与 Observability HTTP 接口。OpenTelemetry / LangSmith
-仍处于待评估状态，没有依赖、账号、外部数据发送或费用。
+当前 Metrics 进程重启后清零，多实例之间不聚合，也没有百分位、时间窗口、持久化、告警或
+管理员 RBAC；已认证用户只能看到不含身份/内容的全局聚合。OpenTelemetry / LangSmith 仍处于
+待评估状态，没有依赖、账号、外部数据发送或费用。
 
 
 ## 9. 当前部署边界

@@ -76,6 +76,7 @@ from app.material_ingestion import (
     MaterialValidationError,
     StagedMaterial,
 )
+from app.metrics import runtime_metrics
 from app.operation_guard import (
     OperationGuard,
     OperationProtectionError,
@@ -157,6 +158,51 @@ _document_job_service_lock = asyncio.Lock()
 
 class HealthResponse(BaseModel):
     status: Literal["ok"] = "ok"
+
+
+class SystemMetricsResponse(BaseModel):
+    requests_total: int
+    requests_succeeded: int
+    requests_failed: int
+    success_rate: float
+    error_rate: float
+    average_duration_ms: float
+
+
+class RetrievalMetricsResponse(BaseModel):
+    calls_total: int
+    calls_failed: int
+    empty_results: int
+    retrieved_chunks_total: int
+    average_retrieved_chunks: float
+    average_duration_ms: float
+
+
+class LLMMetricsResponse(BaseModel):
+    calls_total: int
+    calls_failed: int
+    models: list[str]
+    average_duration_ms: float
+    token_usage_available_calls: int
+    input_tokens_total: int
+    output_tokens_total: int
+    tokens_total: int
+
+
+class DocumentProcessingMetricsResponse(BaseModel):
+    completed_total: int
+    failed_total: int
+    average_duration_ms: float
+
+
+class ObservabilityMetricsResponse(BaseModel):
+    generated_at: str
+    process_started_at: str
+    uptime_seconds: float
+    system: SystemMetricsResponse
+    retrieval: RetrievalMetricsResponse
+    llm: LLMMetricsResponse
+    document_processing: DocumentProcessingMetricsResponse
 
 
 class AskRequest(BaseModel):
@@ -640,6 +686,7 @@ app.state.material_managers = {}
 app.state.user_workspaces_dir = runtime_settings.user_workspaces_dir
 app.state.request_history_writer = RequestHistoryWriter(runtime_settings.request_log_path)
 app.state.operation_guard = OperationGuard()
+app.state.runtime_metrics = runtime_metrics
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -685,6 +732,7 @@ def write_request_log(
     error_category: str | None = None,
 ) -> None:
     """持久化并向 Uvicorn 控制台写入隐私安全的单行 JSON 请求日志。"""
+    runtime_metrics.record_http(status_code=status_code, duration_ms=elapsed_ms)
     record = {
         "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "event": "http_request_completed",
@@ -1397,6 +1445,18 @@ async def get_authenticated_user(
     current_user: Annotated[UserRecord, Depends(get_current_user)],
 ) -> UserResponse:
     return user_response(current_user)
+
+
+@app.get(
+    "/api/observability/metrics",
+    response_model=ObservabilityMetricsResponse,
+)
+async def get_observability_metrics(
+    current_user: Annotated[UserRecord, Depends(get_current_user)],
+) -> ObservabilityMetricsResponse:
+    """返回当前单实例的匿名聚合指标；不暴露用户、请求或内容明细。"""
+    del current_user
+    return ObservabilityMetricsResponse.model_validate(runtime_metrics.snapshot())
 
 
 @app.post(

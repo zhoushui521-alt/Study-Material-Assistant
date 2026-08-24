@@ -19,6 +19,7 @@ from app.material_ingestion import (
     MaterialSyncResult,
     StagedMaterial,
 )
+from app.metrics import runtime_metrics
 from app.observability import OBSERVABILITY_LOGGER_NAME, observation_context
 from app.operation_guard import OperationGuard
 
@@ -192,6 +193,7 @@ class DocumentJobServiceTests(unittest.IsolatedAsyncioTestCase):
         self.manager.commit_staged_batch.assert_called_once_with(upload_ids)
 
     async def test_worker_trace_uses_job_id_without_inheriting_request_context(self) -> None:
+        runtime_metrics.reset()
         upload_id = "c" * 32
         await self.service.close()
         self.manager.inspect_staged.return_value = staged(upload_id, "trace.md")
@@ -236,6 +238,10 @@ class DocumentJobServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(payloads[1]["request_id"])
         self.assertIsNone(payloads[2]["request_id"])
         self.assertTrue(all(payload["job_id"] == created.job_id for payload in payloads))
+        document_metrics = runtime_metrics.snapshot()["document_processing"]
+        self.assertEqual(document_metrics["completed_total"], 1)
+        self.assertEqual(document_metrics["failed_total"], 0)
+        self.assertGreaterEqual(document_metrics["average_duration_ms"], 0)
 
     async def test_restart_resumes_persisted_pending_job(self) -> None:
         upload_id = "a" * 32

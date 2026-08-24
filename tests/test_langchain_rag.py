@@ -22,6 +22,7 @@ from app.langchain_rag import (
     normalize_answer_for_terminal,
 )
 from app.langchain_store import rebuild_vector_store
+from app.metrics import runtime_metrics
 from app.observability import OBSERVABILITY_LOGGER_NAME, observation_context
 
 
@@ -64,6 +65,7 @@ class LangChainRAGTests(unittest.TestCase):
         self.assertIn(NO_EVIDENCE_TOKEN, prompt_messages[0].content)
 
     def test_trace_links_retrieval_and_llm_events_to_one_request(self) -> None:
+        runtime_metrics.reset()
         retriever = Mock()
         retriever.invoke.return_value = [self.document]
         chat_model = Mock()
@@ -100,6 +102,12 @@ class LangChainRAGTests(unittest.TestCase):
         self.assertEqual(payloads[1]["retrieved_count"], 1)
         self.assertFalse(payloads[1]["empty_retrieval"])
         self.assertEqual(payloads[-1]["total_tokens"], 12)
+        metrics = runtime_metrics.snapshot()
+        self.assertEqual(metrics["retrieval"]["calls_total"], 1)
+        self.assertEqual(metrics["retrieval"]["retrieved_chunks_total"], 1)
+        self.assertEqual(metrics["llm"]["calls_total"], 1)
+        self.assertEqual(metrics["llm"]["tokens_total"], 12)
+        self.assertEqual(metrics["llm"]["models"], ["qwen-test"])
         self.assertNotIn(
             "资料太长怎么办",
             "\n".join(record.getMessage() for record in captured.records),

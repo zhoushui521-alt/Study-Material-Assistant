@@ -6,6 +6,7 @@ from unittest.mock import Mock
 
 from langchain_core.messages import AIMessage
 
+from app.metrics import runtime_metrics
 from app.observability import (
     OBSERVABILITY_LOGGER_NAME,
     JsonLogFormatter,
@@ -144,6 +145,7 @@ class ObservabilityLoggingTests(unittest.TestCase):
         self.assertTrue(all(item["request_id"] == "request-2" for item in payloads))
 
     def test_model_failure_log_does_not_include_exception_detail(self) -> None:
+        runtime_metrics.reset()
         model = Mock()
         model.model_name = "qwen-test"
         model.invoke.side_effect = RuntimeError("api_key=secret-value")
@@ -157,6 +159,9 @@ class ObservabilityLoggingTests(unittest.TestCase):
         self.assertEqual(payload["event"], "llm_call_failed")
         self.assertEqual(payload["error_type"], "RuntimeError")
         self.assertNotIn("secret-value", serialized)
+        llm_metrics = runtime_metrics.snapshot()["llm"]
+        self.assertEqual(llm_metrics["calls_total"], 1)
+        self.assertEqual(llm_metrics["calls_failed"], 1)
 
 if __name__ == "__main__":
     unittest.main()
