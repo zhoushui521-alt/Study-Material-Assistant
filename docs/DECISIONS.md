@@ -290,3 +290,33 @@ Embedding、ChatModel、Reranker 或外部网关，因此这些证据不证明�
 Revisit Trigger: 需要 Claude/Anthropic、多个凭据/组织级凭据、真实流式 API、价格版本与预算
 阻断、多 Provider 容灾、多个应用实例、正式主密钥轮换/托管，或观测到当前 Adapter/SQLite
 成为瓶颈时，再分别评估原生 Adapter、定价注册表、共享凭据存储或独立 Gateway。
+
+## 11. Stage 6 以生产就绪证据和作品化收口，不新增核心技术
+
+Decision: Stage 6 只整理、验证和解释 Stage 0～5.5 已有能力，输出最终架构、工程上下文、
+评测汇总、Demo、面试材料和最终质量报告；不新增核心业务功能或基础设施。
+
+Status: Accepted in Stage 6。
+
+Background: 当前系统已经包含正式 RAG、Evidence/Citation、Retrieval Evaluation、
+Tutor/Study Workflow、身份与用户隔离、异步 Job、部署定义、Observability 和 Model Gateway。
+继续加入 Multi-Agent、MCP、GraphRAG、新数据库或更多模型，会扩大测试、部署、安全和解释成本，
+但当前没有对应故障、规模或用户价值证据。
+
+Options: 继续扩展技术清单；只做展示文档；以代码事实、测试、Demo 和限制清单完成工程收口。
+
+Choice: 选择第三项。Stage 6 文档必须回指真实入口、Git checkpoint、阶段报告和本次验证；
+发现代码/文档不一致时降低表述或记录未验证，不用宣传性语言掩盖边界。
+
+Reason: 对 AI 应用工程作品，能说明“为什么这样设计、如何验证、何时拒绝技术、还有什么未验收”
+比新增框架更能证明工程判断。该选择也保持当前单实例原型的最小可维护边界。
+
+Trade-off: Stage 6 的业务代码量可能接近零，也不会把项目自动变成公开生产系统。Docker、
+真实 Provider、并发负载、备份恢复、公开安全和 Claim-level Faithfulness/Citation Accuracy
+若没有新证据，仍必须列为未验证。
+
+Evidence: `docs/PROJECT_STATUS.md`、`docs/FINAL_ARCHITECTURE.md`、Stage 3～5 Completion
+Reports、正式调用链和 Stage 5.5 全量 `434/434` 自动化基线。
+
+Revisit Trigger: 出现可复现的回答质量缺陷、真实多实例/吞吐需求、明确外部集成场景或运维 SLO，
+并且现有结构无法用更小改动满足时，再为具体问题立项。

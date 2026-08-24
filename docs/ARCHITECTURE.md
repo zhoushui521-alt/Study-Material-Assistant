@@ -1,8 +1,10 @@
 # Study Material Assistant V2 · Architecture
 
-本文以 `e141e95`（Stage 5.4 收口提交）为 Stage 5.5 起点，并同步
-`d54a90b` 中的 Model Gateway 实现。它仍是具备容器部署定义的单实例原型，
-不代表生产环境已经部署。
+本文是持续维护的当前架构事实源；Stage 6 用于作品展示的冻结系统图见
+[FINAL_ARCHITECTURE](FINAL_ARCHITECTURE.md)。当前实现包含 `d54a90b` 的 Model Gateway，
+Stage 6 文档基线为 `c3c39e0`。
+
+系统仍是具备容器部署定义的单实例原型，不代表生产环境已经部署。
 
 ## 1. Frontend
 

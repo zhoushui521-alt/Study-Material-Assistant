@@ -5,9 +5,13 @@
 
 ## 项目文档入口
 
-- [PROJECT_STATUS](docs/PROJECT_STATUS.md)：当前项目状态的唯一入口，记录 V2 checkpoint、证据层级、已完成能力与未验证项；
-- [ARCHITECTURE](docs/ARCHITECTURE.md)：当前真实前端、后端、RAG、Tutor、存储与异步处理架构；
-- [DECISIONS](docs/DECISIONS.md)：由实验数据和 Completion Report 支撑的关键技术取舍。
+- [PROJECT_CONTEXT](docs/PROJECT_CONTEXT.md)：开发、Review 与交接所需的最小上下文和边界；
+- [PROJECT_STATUS](docs/PROJECT_STATUS.md)：当前状态唯一入口，记录 checkpoint、证据层级、已完成能力与未验证项；
+- [ARCHITECTURE](docs/ARCHITECTURE.md)：持续维护的当前真实架构；
+- [FINAL_ARCHITECTURE](docs/FINAL_ARCHITECTURE.md)：Stage 6 冻结的作品展示与面试架构快照；
+- [DECISIONS](docs/DECISIONS.md)：由代码、实验和 Completion Report 支撑的关键技术取舍；
+- [EVALUATION](docs/EVALUATION.md)：评测资产、指标、失败分类、费用门槛和运行规范；
+- [DEVELOPMENT_GUIDE](docs/DEVELOPMENT_GUIDE.md)：本地开发、验证、数据、安全和 Git 工作流。
 
 README 保留项目介绍与运行方式；阶段状态发生变化时，以 `PROJECT_STATUS.md` 及其链接的 Git Tag、Completion Report 和代码证据为准。
 
@@ -20,7 +24,7 @@ README 保留项目介绍与运行方式；阶段状态发生变化时，以 `PR
 ```text
 Browser
   → FastAPI（同源静态前端 + HTTP API）
-  → RAG / Tutor / Document Job Service
+  → RAG / Tutor / Document Job Service / Model Gateway / Observability
   → data/（SQLite + 用户文件 + Chroma + 请求日志）
 ```
 
@@ -78,6 +82,14 @@ docker compose up
 | `BAILIAN_EMBEDDING_MODEL` | `text-embedding-v4` | Embedding 模型。 |
 | `BAILIAN_EMBEDDING_DIMENSIONS` | `1024` | Embedding 维度。 |
 | `BAILIAN_CHAT_MODEL` | `qwen-plus` | ChatModel 名称。 |
+| `DEFAULT_PROVIDER` | `qwen` | Model Gateway 的系统默认 Provider。 |
+| `DEFAULT_MODEL` | `qwen-plus` | Model Gateway 的系统默认 ChatModel。 |
+| `MODEL_API_KEY` | 空 | 系统 ChatModel Key；仅默认 Qwen 时可回退 `BAILIAN_API_KEY`。 |
+| `MODEL_BASE_URL` | 空 | 服务端控制的 Chat Base URL；用户 BYOK API 不能提交任意地址。 |
+| `MODEL_TIMEOUT` | `60` | ChatModel 单次超时秒数。 |
+| `MODEL_MAX_TOKENS` | 空 | 可选单次生成上限，不等于用户预算或货币成本控制。 |
+| `MODEL_TEMPERATURE` | `0.2` | ChatModel temperature。 |
+| `MODEL_CREDENTIAL_ENCRYPTION_KEY` | 空 | BYOK Fernet 主密钥；必须跨重启稳定。 |
 
 `.env`、`data/` 与真实密钥不会进入 Docker build context，也不得提交到 Git。
 
@@ -88,6 +100,7 @@ docker compose up
 - `learning/learning.sqlite3`：用户、认证 Session、学习数据与 Tutor checkpoint；
 - `jobs/document_jobs.sqlite3`：异步文档任务；
 - `study_workflows/checkpoints.sqlite3`：Study Workflow checkpoint；
+- `model_gateway/model_credentials.sqlite3`：每用户一条活跃 BYOK 的 Provider、模型与密文；
 - `user_workspaces/<user_uuid>/`：用户文件、暂存区与 Chroma；
 - `request_logs/`：有限轮转的隐私安全请求元数据；
 - `crawl4ai_runtime/`：网页 Markdown 转换运行目录。
@@ -97,8 +110,9 @@ docker compose up
 
 ### 常见问题
 
-- **`/health` 正常但问答失败：** 健康检查只证明 API 进程可响应。继续检查
-  `BAILIAN_API_KEY`、`BAILIAN_BASE_URL`、当前用户资料和 Index Manifest。
+- **`/health` 正常但问答失败：** 健康检查只证明 API 进程可响应。继续检查当前用户资料、
+  Index Manifest、Embedding 配置，以及 Model Gateway 的 `DEFAULT_PROVIDER`、模型、系统/BYOK
+  凭据和服务端 Base URL。
 - **宿主机 8000 端口被占用：** 在 `.env` 中修改 `ZHIXING_PORT`，例如 `8012`；
   容器内端口仍保持 8000。
 - **为什么没有独立 frontend 或 worker 容器：** 当前前端是 FastAPI 同源静态资源，

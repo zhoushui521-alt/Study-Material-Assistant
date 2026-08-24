@@ -10,7 +10,8 @@
 - Stage 5.4 起点：`6f0e770`（`study-material-v2-stage5-part4`）
 - Stage 5.5 起点：`e141e95`（Stage 5.4 收口提交）
 - Stage 5.5 代码 checkpoint：`d54a90b`；本阶段未单独创建 Tag
-- 当前 checkpoint：Stage 5.5 文档收口提交；准确 commit 以当前 Git history 为准
+- Stage 5.5 文档收口：`9ac680a`
+- Stage 6.1 Final Architecture checkpoint：`c3c39e0`
 - 远程边界：本地提交未 push；公开部署状态不能由本地 Git 推断
 - 证据层级：代码实现、自动化测试、历史本地运行、真实模型实验、生产验证分别记录，不能互相替代
 
@@ -183,7 +184,18 @@
   不属于正式 V2 API 调用链，仍保留历史直连实现。
 - 证据：[Stage 5.5 Completion Report](stage5-5-completion-report.md)
 
-## 3. 当前正式主链路
+### Stage 6：Production Readiness & Portfolio
+
+- 状态：**In Progress**
+- 目标：把现有工程整理为可展示、可复现、可维护、可面试解释的作品；不新增核心业务功能。
+- Stage 6.1：**Completed**；`c3c39e0` 新增 [Final Architecture](FINAL_ARCHITECTURE.md)，
+  冻结系统图、上传/RAG/Gateway 数据流、Agent/Workflow、持久化、观测、安全与部署边界。
+- Stage 6.2：**Completed in the current documentation checkpoint**；新增
+  [Project Context](PROJECT_CONTEXT.md)、[Evaluation Guide](EVALUATION.md) 与
+  [Development Guide](DEVELOPMENT_GUIDE.md)，并同步 README、Architecture 与 Decisions。
+- 待完成：Stage 6.3 RAG 汇总报告、6.4 Demo、6.5 Interview、6.6 最终 Review 与全量验证。
+- 证据边界：本阶段当前只修改 Markdown，不代表 Docker、真实 Provider 或生产验收通过。
+
 
 当前正式 RAG 仍是 Stage 2 Retrieval baseline，加上 Stage 3.4 Context Selector：
 
