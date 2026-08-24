@@ -7,6 +7,7 @@
 - 同步日期：2026-08-24
 - 分支：`main`
 - Stage 5.3 起点：`29e7c7e4e11781e26d8cf0dc3a523b83efe6acbd`
+- Stage 5.4 起点：`6f0e770`（`study-material-v2-stage5-part4`）
 - 当前 checkpoint：`study-material-v2-stage5-part4`（以 Tag 解析到的提交为准）
 - 远程边界：本地 checkpoint 未 push；公开部署状态不能由本地 Git 推断
 - 证据层级：代码实现、自动化测试、历史本地运行、真实模型实验、生产验证分别记录，不能互相替代
@@ -137,6 +138,17 @@
   没有公开部署、HTTPS、负载、渗透、生产备份或多实例证据。
 - 证据：[Stage 5.3 Completion Report](stage5-3-completion-report.md)
 
+#### Stage 5.4：Observability
+
+- 状态：**In Progress**
+- Stage 5.4.1 已实现：`app.observability` 统一 JSON Logger、固定
+  `time / level / service / request_id / user_id / event / duration_ms` 基线字段、
+  HTTP 请求开始/结束事件，以及既有 API 生命周期安全日志迁移。
+- 保留边界：轮转 `RequestHistoryWriter` 继续只持久化白名单 HTTP 元数据；控制台结构化日志
+  也拒绝未列入白名单的任意内容字段，不记录问题、回答、Prompt、文件正文、密钥或 URL 查询参数。
+- 当前验证：改动前全量 `400/400`；5.4.1 Logging / Request History / API 专项
+  `45/45`。Request Trace、RAG/LLM/Job 阶段事件、Metrics 和接口尚未进入本子阶段。
+
 ## 3. 当前正式主链路
 
 当前正式 RAG 仍是 Stage 2 Retrieval baseline，加上 Stage 3.4 Context Selector：
@@ -162,8 +174,8 @@ BM25 + RRF、Cross-Encoder 和 Structure-aware Chunking 都是已完成、可复
 
 ## 4. 未开始与未验证
 
-- **In Progress：无。** Stage 5.3 已形成 checkpoint，未自动开始后续 Stage。
-- **Planned：Observability / BYOK。** 仅为后续候选，不代表已经实现或已经排期。
+- **In Progress：Stage 5.4 Observability。** 当前只完成 5.4.1 Structured Logging Foundation。
+- **Planned：Stage 5.4.2～5.4.4 / BYOK。** 尚未实现的 Trace、Metrics 与集成决策仍是计划。
 - **未验证：** Docker build/up、容器重启恢复、真实 Tutor 全路径质量、当前认证版本的真实付费 RAG 闭环、并发/负载、长时间运行、多实例一致性、生产备份恢复和公开安全验收。
 
 ## 5. 持续同步规则

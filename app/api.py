@@ -1,7 +1,6 @@
 """学习资料助手的最小 FastAPI 服务。"""
 
 import asyncio
-import json
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -81,6 +80,7 @@ from app.operation_guard import (
     OperationGuard,
     OperationProtectionError,
 )
+from app.observability import log_event
 from app.rag_service import (
     RAGService,
     RAGServiceInitializationError,
@@ -147,7 +147,6 @@ _workflow_service_lock = asyncio.Lock()
 _learning_data_lock = asyncio.Lock()
 _tutor_service_lock = asyncio.Lock()
 _document_job_service_lock = asyncio.Lock()
-request_logger = logging.getLogger("uvicorn.error")
 
 
 class HealthResponse(BaseModel):
@@ -529,20 +528,15 @@ async def lifespan(api: FastAPI) -> AsyncIterator[None]:
                 cleaned = manager.cleanup_stale_pending_uploads()
             except Exception:
                 cleaned = 0
-                request_logger.warning(
-                    json.dumps(
-                        {"event": "stale_pending_upload_cleanup_failed"},
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
+                log_event(
+                    "stale_pending_upload_cleanup_failed",
+                    level=logging.WARNING,
+                    details={"component": "material_manager"},
                 )
             if cleaned:
-                request_logger.info(
-                    json.dumps(
-                        {"event": "stale_pending_uploads_cleaned", "count": cleaned},
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
+                log_event(
+                    "stale_pending_uploads_cleaned",
+                    details={"component": "material_manager", "count": cleaned},
                 )
         if (
             getattr(api.state, "document_job_service", None) is None
@@ -560,12 +554,10 @@ async def lifespan(api: FastAPI) -> AsyncIterator[None]:
                     ),
                 )
             except Exception:
-                request_logger.error(
-                    json.dumps(
-                        {"event": "document_job_service_recovery_failed"},
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
+                log_event(
+                    "document_job_service_recovery_failed",
+                    level=logging.ERROR,
+                    details={"component": "document_job_service"},
                 )
         yield
     finally:
@@ -574,12 +566,10 @@ async def lifespan(api: FastAPI) -> AsyncIterator[None]:
             try:
                 await document_job_service.close()
             except Exception:
-                request_logger.error(
-                    json.dumps(
-                        {"event": "document_job_service_cleanup_failed"},
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
+                log_event(
+                    "document_job_service_cleanup_failed",
+                    level=logging.ERROR,
+                    details={"component": "document_job_service"},
                 )
         api.state.document_job_service = None
         workflow_service = getattr(api.state, "study_workflow_service", None)
@@ -587,12 +577,10 @@ async def lifespan(api: FastAPI) -> AsyncIterator[None]:
             try:
                 await workflow_service.close()
             except Exception:
-                request_logger.error(
-                    json.dumps(
-                        {"event": "study_workflow_service_cleanup_failed"},
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
+                log_event(
+                    "study_workflow_service_cleanup_failed",
+                    level=logging.ERROR,
+                    details={"component": "study_workflow_service"},
                 )
         api.state.study_workflow_service = None
         learning_store = getattr(api.state, "learning_data_store", None)
@@ -600,12 +588,10 @@ async def lifespan(api: FastAPI) -> AsyncIterator[None]:
             try:
                 await learning_store.close()
             except Exception:
-                request_logger.error(
-                    json.dumps(
-                        {"event": "learning_data_store_cleanup_failed"},
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
+                log_event(
+                    "learning_data_store_cleanup_failed",
+                    level=logging.ERROR,
+                    details={"component": "learning_data_store"},
                 )
         api.state.learning_data_store = None
         services = tuple(getattr(api.state, "rag_services", {}).values())
@@ -613,12 +599,10 @@ async def lifespan(api: FastAPI) -> AsyncIterator[None]:
             try:
                 service.close()
             except Exception:
-                request_logger.error(
-                    json.dumps(
-                        {"event": "rag_service_cleanup_failed"},
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
+                log_event(
+                    "rag_service_cleanup_failed",
+                    level=logging.ERROR,
+                    details={"component": "rag_service"},
                 )
         api.state.agent_services.clear()
         api.state.tutor_services.clear()
@@ -710,15 +694,24 @@ def write_request_log(
         try:
             history_writer.write(record)
         except RequestHistoryError:
-            request_logger.warning(
-                json.dumps(
-                    {"event": "request_history_write_failed"},
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+            log_event(
+                "request_history_write_failed",
+                level=logging.WARNING,
+                request_id=request_id,
+                user_id=getattr(request.state, "current_user_id", None),
+                details={"component": "request_history"},
             )
-    request_logger.info(
-        json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+    log_event(
+        "http_request_completed",
+        request_id=request_id,
+        user_id=getattr(request.state, "current_user_id", None),
+        duration_ms=elapsed_ms,
+        details={
+            "method": request.method,
+            "path": record["path"],
+            "status_code": status_code,
+            "error_category": record["error_category"],
+        },
     )
 
 
@@ -743,6 +736,11 @@ async def log_http_request(
     request_id = uuid4().hex
     request.state.request_id = request_id
     started = perf_counter()
+    log_event(
+        "http_request_started",
+        request_id=request_id,
+        details={"method": request.method, "component": "api"},
+    )
     try:
         response = await call_next(request)
     except Exception:
@@ -1054,12 +1052,11 @@ def invalidate_rag_service(api: FastAPI, user_id: str) -> None:
         try:
             service.close()
         except Exception:
-            request_logger.error(
-                json.dumps(
-                    {"event": "rag_service_refresh_cleanup_failed"},
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+            log_event(
+                "rag_service_refresh_cleanup_failed",
+                level=logging.ERROR,
+                user_id=user_id,
+                details={"component": "rag_service"},
             )
 
 

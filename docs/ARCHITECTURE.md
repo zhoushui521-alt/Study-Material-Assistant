@@ -1,6 +1,7 @@
 # Study Material Assistant V2 · Architecture
 
-本文描述 `study-material-v2-stage5-part4` 对应的当前真实架构；具体提交以 Tag 解析结果为准。它是具备容器部署定义的单实例原型，不代表生产环境已经部署。
+本文以 `study-material-v2-stage5-part4` 为 Stage 5.4 起点，并同步当前进行中的真实实现。
+它仍是具备容器部署定义的单实例原型，不代表生产环境已经部署。
 
 ## 1. Frontend
 
@@ -174,7 +175,31 @@ SQLite。Compose network 只为部署定义清楚边界，不代表存在微服�
 当前机器已完成本地 startup、Health、首页和静态资源 HTTP 200 验证；由于没有 Docker CLI，
 镜像构建、Compose 启动、volume 重启恢复和容器内 HTTP 尚未验证。
 
-## 8. 当前部署边界
+## 8. Observability Layer（Stage 5.4 In Progress）
+
+Stage 5.4.1 已建立标准库结构化日志基础：
+
+```text
+HTTP Request
+  → FastAPI Middleware
+  → app.observability
+       ├─ JSON Console Event
+       └─ RequestHistoryWriter（仅完成事件的白名单 HTTP 元数据）
+```
+
+每条控制台事件固定包含 `time`、`level`、`service`、`request_id`、`user_id`、
+`event` 和 `duration_ms`。HTTP Middleware 已记录开始与结束、状态码和耗时；服务启动、
+关闭及清理错误也使用同一 Logger。
+
+`RequestHistoryWriter` 不是完整 Trace Store：它继续轮转保存最小 HTTP 完成记录，且拒绝
+问题、回答、文件正文、Prompt、密钥、任意未知路径与 URL 查询参数。当前控制台 Logger 同样
+只接纳白名单详情字段。
+
+尚未实现：Request Context 在 RAG/LLM/Document Job 内部的贯穿、阶段耗时事件、进程内
+Metrics 聚合与 Observability HTTP 接口。这些属于 5.4.2～5.4.4，不能由 5.4.1 外推。
+
+
+## 9. 当前部署边界
 
 当前运行拓扑是本地 FastAPI 单实例 + 本地文件系统 + 本地 SQLite + 本地 Chroma。已有自动化和历史本地运行证据不能证明：
 

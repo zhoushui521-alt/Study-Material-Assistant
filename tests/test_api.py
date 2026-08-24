@@ -38,6 +38,7 @@ from app.material_ingestion import (
     StagedMaterial,
 )
 from app.operation_guard import OperationGuard, OperationPolicy
+from app.observability import OBSERVABILITY_LOGGER_NAME
 from app.rag_service import RAGService, RAGServiceInitializationError
 from app.request_history import RequestHistoryWriter
 from app.url_safety import UnsafeURLError
@@ -127,7 +128,7 @@ class APITests(unittest.TestCase):
         create_service.assert_not_called()
 
     def test_web_page_and_assets_do_not_initialize_rag(self) -> None:
-        with self.assertLogs("uvicorn.error", level="INFO") as captured:
+        with self.assertLogs(OBSERVABILITY_LOGGER_NAME, level="INFO") as captured:
             with patch("app.api.create_rag_service") as create_service:
                 with TestClient(app) as client:
                     page = client.get("/")
@@ -179,7 +180,10 @@ class APITests(unittest.TestCase):
         self.assertIn("image/png", study_objects_image.headers["content-type"])
         create_service.assert_not_called()
         request_paths = [
-            json.loads(record.getMessage())["path"] for record in captured.records
+            payload["path"]
+            for record in captured.records
+            if (payload := json.loads(record.getMessage()))["event"]
+            == "http_request_completed"
         ]
         self.assertEqual(
             request_paths,
@@ -213,7 +217,7 @@ class APITests(unittest.TestCase):
         )
         app.dependency_overrides[get_rag_service_provider] = lambda: lambda: service
 
-        with self.assertLogs("uvicorn.error", level="INFO") as captured:
+        with self.assertLogs(OBSERVABILITY_LOGGER_NAME, level="INFO") as captured:
             with TestClient(app) as client:
                 response = client.post(
                     "/api/ask",
@@ -249,10 +253,10 @@ class APITests(unittest.TestCase):
         self.assertEqual(request_log["path"], "/api/ask")
         self.assertEqual(request_log["status_code"], 200)
         self.assertIsNone(request_log["error_category"])
-        self.assertGreaterEqual(request_log["elapsed_ms"], 0)
+        self.assertGreaterEqual(request_log["duration_ms"], 0)
         self.assertEqual(response.headers[REQUEST_ID_HEADER], request_log["request_id"])
         UUID(request_log["request_id"])
-        datetime.fromisoformat(request_log["timestamp"].replace("Z", "+00:00"))
+        datetime.fromisoformat(request_log["time"].replace("Z", "+00:00"))
         self.assertNotIn("RAG 是什么", captured.records[-1].getMessage())
         self.assertNotIn("RAG 会先检索", captured.records[-1].getMessage())
 
@@ -276,7 +280,7 @@ class APITests(unittest.TestCase):
         self.assertEqual(response.json()["citations"], [])
 
     def test_whitespace_question_is_rejected_before_rag_call(self) -> None:
-        with self.assertLogs("uvicorn.error", level="INFO") as captured:
+        with self.assertLogs(OBSERVABILITY_LOGGER_NAME, level="INFO") as captured:
             with patch("app.api.create_rag_service") as create_service:
                 with TestClient(app) as client:
                     response = client.post("/api/ask", json={"question": "   "})
@@ -318,7 +322,7 @@ class APITests(unittest.TestCase):
         )
         app.dependency_overrides[get_rag_service_provider] = lambda: lambda: service
 
-        with self.assertLogs("uvicorn.error", level="INFO") as captured:
+        with self.assertLogs(OBSERVABILITY_LOGGER_NAME, level="INFO") as captured:
             with TestClient(app) as client:
                 response = client.post("/api/ask", json={"question": "RAG 是什么？"})
 
@@ -337,7 +341,7 @@ class APITests(unittest.TestCase):
                 "初始化失败：BAILIAN_API_KEY=secret-value"
             ),
         ):
-            with self.assertLogs("uvicorn.error", level="INFO") as captured:
+            with self.assertLogs(OBSERVABILITY_LOGGER_NAME, level="INFO") as captured:
                 with TestClient(app) as client:
                     response = client.post(
                         "/api/ask",
@@ -353,7 +357,7 @@ class APITests(unittest.TestCase):
         self.assertNotIn("secret-value", request_log_text)
 
     def test_unmatched_route_does_not_log_raw_path_or_query(self) -> None:
-        with self.assertLogs("uvicorn.error", level="INFO") as captured:
+        with self.assertLogs(OBSERVABILITY_LOGGER_NAME, level="INFO") as captured:
             with TestClient(app) as client:
                 response = client.get(
                     "/secret-path-value",
@@ -423,7 +427,7 @@ class APITests(unittest.TestCase):
         service.ask.side_effect = RuntimeError("api_key=secret-value")
         app.dependency_overrides[get_rag_service_provider] = lambda: lambda: service
 
-        with self.assertLogs("uvicorn.error", level="INFO") as captured:
+        with self.assertLogs(OBSERVABILITY_LOGGER_NAME, level="INFO") as captured:
             with TestClient(app) as client:
                 response = client.post(
                     "/api/ask",
@@ -481,7 +485,9 @@ class APITests(unittest.TestCase):
         )
         app.state.material_manager = manager
         try:
-            with self.assertLogs("uvicorn.error", level="WARNING") as captured:
+            with self.assertLogs(
+                OBSERVABILITY_LOGGER_NAME, level="WARNING"
+            ) as captured:
                 with TestClient(app) as client:
                     response = client.get("/health")
         finally:
