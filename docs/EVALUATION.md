@@ -140,8 +140,8 @@ Stage 3.4 Context 评测复用历史 Retrieval Trace，不调用 Embedding 或 C
 | Structure-aware Chunking | Recall@1/MRR/nDCG@5 上升；Recall@3、Final Context Recall、Context Precision 下降 | 拒绝替换正式 Chunker |
 | EvidenceScoreContextSelector | Context Precision `0.15 → 0.20`；Final Context Recall 保持 `1.0` | 接入正式 `RAGService` |
 
-完整数值、版本和限制见 Stage 3 Completion Reports；Stage 6.3 的汇总报告负责把这些证据整理为
-一份作品化结论，不重新运行付费实验。
+完整数值、版本和限制见 Stage 3 Completion Reports 以及
+[RAG Evaluation Report](RAG_EVALUATION_REPORT.md)；该汇总没有重新运行付费实验。
 
 ## 9. 自动化与真实评测的区别
 

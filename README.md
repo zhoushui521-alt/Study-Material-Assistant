@@ -11,6 +11,7 @@
 - [FINAL_ARCHITECTURE](docs/FINAL_ARCHITECTURE.md)：Stage 6 冻结的作品展示与面试架构快照；
 - [DECISIONS](docs/DECISIONS.md)：由代码、实验和 Completion Report 支撑的关键技术取舍；
 - [EVALUATION](docs/EVALUATION.md)：评测资产、指标、失败分类、费用门槛和运行规范；
+- [RAG_EVALUATION_REPORT](docs/RAG_EVALUATION_REPORT.md)：Stage 2～3 的受控实验汇总、失败案例与正式接入决策；
 - [DEVELOPMENT_GUIDE](docs/DEVELOPMENT_GUIDE.md)：本地开发、验证、数据、安全和 Git 工作流。
 
 README 保留项目介绍与运行方式；阶段状态发生变化时，以 `PROJECT_STATUS.md` 及其链接的 Git Tag、Completion Report 和代码证据为准。
