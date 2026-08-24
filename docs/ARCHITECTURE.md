@@ -175,7 +175,7 @@ SQLite。Compose network 只为部署定义清楚边界，不代表存在微服�
 当前机器已完成本地 startup、Health、首页和静态资源 HTTP 200 验证；由于没有 Docker CLI，
 镜像构建、Compose 启动、volume 重启恢复和容器内 HTTP 尚未验证。
 
-## 8. Observability Layer（Stage 5.4 In Progress）
+## 8. Observability Layer（Stage 5.4 Completed）
 
 Stage 5.4.1～5.4.3 已建立结构化日志、Request Trace 与单进程运行指标：
 
@@ -215,8 +215,8 @@ Worker 创建时显式使用空 `Context`，后续 processing/completed/failed �
 接纳白名单详情字段。
 
 当前 Metrics 进程重启后清零，多实例之间不聚合，也没有百分位、时间窗口、持久化、告警或
-管理员 RBAC；已认证用户只能看到不含身份/内容的全局聚合。OpenTelemetry / LangSmith 仍处于
-待评估状态，没有依赖、账号、外部数据发送或费用。
+管理员 RBAC；已认证用户只能看到不含身份/内容的全局聚合。Stage 5.4 已决定当前不接入
+OpenTelemetry / LangSmith，没有新增依赖、账号、外部数据发送或费用；重评条件见 ADR 9。
 
 
 ## 9. 当前部署边界

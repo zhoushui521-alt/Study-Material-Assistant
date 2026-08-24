@@ -214,3 +214,34 @@ Evidence: Stage 5.1/5.2/part3 Completion Reports、400/400 回归、Stage 5.3 Co
 Revisit Trigger: 多 API 实例、独立 Worker、共享事务吞吐、正式灾备或 SQLite 锁竞争成为
 可观察瓶颈。届时需同时处理 SQL 方言、Migration、PostgreSQL checkpointer、事务 Job 领取、
 共享文件/向量存储与回滚，不能只更换数据库连接字符串。
+
+## 9. Stage 5.4 先采用本地基础可观测性，不接入 OpenTelemetry / LangSmith
+
+Decision: 保留标准库 JSON Logging、`ContextVar` Request Trace 与单进程 `RuntimeMetrics`，
+Stage 5.4 不安装 OpenTelemetry SDK/Collector，也不连接 LangSmith。
+
+Status: Adopted for Stage 5.4。
+
+Background: 当前运行拓扑是一个 FastAPI 进程、进程内 Document Worker、本地 SQLite 与
+本地 Chroma。现阶段需要回答请求经历、阶段耗时、空召回、模型失败和进程健康，但没有跨服务
+Trace、多个副本聚合、长期指标留存、告警或外部 Trace 平台的已验证需求。
+
+Options: 标准库本地基础能力；立即接入 OpenTelemetry；立即接入 LangSmith；同时接入两者。
+
+Choice: 采用本地基础能力。结构化日志只接收白名单非内容字段；Request Trace 用
+`request_id` / `job_id` 关联；Metrics 只保留当前进程匿名累计值；认证接口只返回聚合快照。
+
+Reason: 该方案已经覆盖当前单实例的问题定位闭环，不增加 Collector、Exporter、外部账号、
+网络故障、数据发送、费用和部署维护边界。LangSmith 更适合需要持久化模型/链路追踪和质量分析的
+场景，但当前把 Prompt、学习资料或模型输出发送到外部平台会引入额外隐私与授权问题。
+
+Trade-off: 日志和 Metrics 没有统一 Trace Store；进程重启后 Metrics 清零；没有百分位、
+时间窗口、跨实例聚合、Dashboard、告警、管理员 RBAC，也不能把运行指标自动关联到 Evaluation
+Dataset。当前能力是基础可观测性，不是生产级监控平台。
+
+Evidence: `app/observability.py`、`app/metrics.py`、认证 Metrics API、417/417 全量回归和
+Stage 5.4 独立临时实例手动验证。
+
+Revisit Trigger: 出现多个服务或实例、独立 Worker、跨进程 Trace、长期留存、SLO/告警、
+生产 Dashboard，或经批准需要把运行 Trace 与模型质量评测关联。届时应先定义数据分级、采样、
+脱敏、保留期、费用上限和退出方案，再选择 OpenTelemetry Exporter、Collector 或 LangSmith。

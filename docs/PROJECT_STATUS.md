@@ -8,7 +8,7 @@
 - 分支：`main`
 - Stage 5.3 起点：`29e7c7e4e11781e26d8cf0dc3a523b83efe6acbd`
 - Stage 5.4 起点：`6f0e770`（`study-material-v2-stage5-part4`）
-- 当前 checkpoint：`study-material-v2-stage5-part4`（以 Tag 解析到的提交为准）
+- 当前 checkpoint：Stage 5.4 Completion Report 所在本地提交（本阶段未创建 Tag）
 - 远程边界：本地 checkpoint 未 push；公开部署状态不能由本地 Git 推断
 - 证据层级：代码实现、自动化测试、历史本地运行、真实模型实验、生产验证分别记录，不能互相替代
 
@@ -140,7 +140,7 @@
 
 #### Stage 5.4：Observability
 
-- 状态：**In Progress**
+- 状态：**Completed（本地提交与报告；未创建 Stage 5.4 Tag）**
 - Stage 5.4.1 已实现：`app.observability` 统一 JSON Logger、固定
   `time / level / service / request_id / user_id / event / duration_ms` 基线字段、
   HTTP 请求开始/结束事件，以及既有 API 生命周期安全日志迁移。
@@ -153,7 +153,11 @@
   Document Job 数值指标；`GET /api/observability/metrics` 只向已认证用户返回匿名全局
   快照，不返回 `request_id`、`user_id` 或内容数据，也不改变 Retrieval Evaluation。
 - 当前验证：改动前全量 `400/400`；5.4.1 专项 `45/45`；5.4.2 Logging / API / RAG /
-  Tutor / Document Job 专项 `97/97`；5.4.3 Metrics 集成专项 `102/102`。
+  Tutor / Document Job 专项 `97/97`；5.4.3 Metrics 集成专项 `102/102`；最终 42 个
+  测试模块分两批回归 `219 + 198 = 417/417`，97 个 Python 文件内存编译和 `pip check` 通过。
+- 本地手动验证：独立临时实例完成 Health、注册、认证 Metrics、422 错误计数与 request_id
+  日志关联；Retrieval / LLM 调用为 0，验证后临时数据已删除。
+- 证据：[Stage 5.4 Completion Report](stage5-4-completion-report.md)
 
 ## 3. 当前正式主链路
 
@@ -180,8 +184,7 @@ BM25 + RRF、Cross-Encoder 和 Structure-aware Chunking 都是已完成、可复
 
 ## 4. 未开始与未验证
 
-- **In Progress：Stage 5.4 Observability。** 当前完成 5.4.1 Structured Logging、5.4.2 Request Trace 与 5.4.3 AI Metrics。
-- **Planned：Stage 5.4.4 / BYOK。** OpenTelemetry / LangSmith 集成决策与全阶段收口仍是计划。
+- **Planned：BYOK。** 仍是后续计划，不属于 Stage 5.4 已实现能力。
 - **未验证：** Docker build/up、容器重启恢复、真实 Tutor 全路径质量、当前认证版本的真实付费 RAG 闭环、并发/负载、长时间运行、多实例一致性、生产备份恢复和公开安全验收。
 
 ## 5. 持续同步规则
