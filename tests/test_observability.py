@@ -2,11 +2,18 @@ import io
 import json
 import logging
 import unittest
+from unittest.mock import Mock
+
+from langchain_core.messages import AIMessage
 
 from app.observability import (
+    OBSERVABILITY_LOGGER_NAME,
     JsonLogFormatter,
     build_log_record,
     configure_observability_logging,
+    invoke_observed_model,
+    log_event,
+    observation_context,
 )
 
 
@@ -87,6 +94,69 @@ class ObservabilityLoggingTests(unittest.TestCase):
         self.assertEqual(len(marked_before), 1)
         self.assertEqual(marked_after, marked_before)
 
+
+    def test_context_is_applied_to_events_and_restored(self) -> None:
+        with self.assertLogs(OBSERVABILITY_LOGGER_NAME, level="INFO") as captured:
+            with observation_context(request_id="request-1", user_id="user-1"):
+                log_event("context_probe")
+            log_event("context_probe")
+
+        inside, outside = [json.loads(record.getMessage()) for record in captured.records]
+        self.assertEqual(inside["request_id"], "request-1")
+        self.assertEqual(inside["user_id"], "user-1")
+        self.assertIsNone(outside["request_id"])
+        self.assertIsNone(outside["user_id"])
+
+    def test_model_invoke_records_available_token_usage(self) -> None:
+        model = Mock()
+        model.model_name = "qwen-test"
+        result = AIMessage(
+            content="answer",
+            usage_metadata={
+                "input_tokens": 4,
+                "output_tokens": 2,
+                "total_tokens": 6,
+            },
+        )
+        model.invoke.return_value = result
+
+        with observation_context(request_id="request-2", user_id="user-2"):
+            with self.assertLogs(
+                OBSERVABILITY_LOGGER_NAME, level="INFO"
+            ) as captured:
+                actual = invoke_observed_model(
+                    model,
+                    "safe prompt placeholder",
+                    component="rag",
+                )
+
+        payloads = [json.loads(record.getMessage()) for record in captured.records]
+        self.assertIs(actual, result)
+        self.assertEqual(
+            [payload["event"] for payload in payloads],
+            ["llm_call_started", "llm_call_completed"],
+        )
+        self.assertEqual(payloads[-1]["model"], "qwen-test")
+        self.assertEqual(payloads[-1]["input_tokens"], 4)
+        self.assertEqual(payloads[-1]["output_tokens"], 2)
+        self.assertEqual(payloads[-1]["total_tokens"], 6)
+        self.assertTrue(payloads[-1]["token_usage_available"])
+        self.assertTrue(all(item["request_id"] == "request-2" for item in payloads))
+
+    def test_model_failure_log_does_not_include_exception_detail(self) -> None:
+        model = Mock()
+        model.model_name = "qwen-test"
+        model.invoke.side_effect = RuntimeError("api_key=secret-value")
+
+        with self.assertLogs(OBSERVABILITY_LOGGER_NAME, level="ERROR") as captured:
+            with self.assertRaises(RuntimeError):
+                invoke_observed_model(model, "prompt", component="rag")
+
+        serialized = captured.records[-1].getMessage()
+        payload = json.loads(serialized)
+        self.assertEqual(payload["event"], "llm_call_failed")
+        self.assertEqual(payload["error_type"], "RuntimeError")
+        self.assertNotIn("secret-value", serialized)
 
 if __name__ == "__main__":
     unittest.main()

@@ -16,6 +16,7 @@ from app.learning_data import (
     LearningDataStore,
     LearningSessionRecord,
 )
+from app.observability import OBSERVABILITY_LOGGER_NAME, observation_context
 from app.rag_service import RAGService
 from app.tutor_workflow import (
     KNOWLEDGE_TOOL_NAME,
@@ -214,6 +215,40 @@ class KnowledgeRetrievalToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.citations, (citation,))
         self.assertEqual(result.evidence[0].evidence_id, evidence.evidence_id)
         self.assertEqual(result.sources, ("[rag.md · 第 1 段]",))
+
+
+class TutorModelTraceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_quiz_model_call_uses_request_context(self) -> None:
+        model = Mock()
+        model.model_name = "qwen-test"
+        structured_model = Mock()
+        structured_model.invoke.return_value = QuizDraft(
+            question="Embedding 的作用是什么？",
+            options=["表示语义", "删除资料"],
+            answer="表示语义",
+            explanation="资料说明文本会被映射为向量。",
+        )
+        model.with_structured_output.return_value = structured_model
+        tool = QuizGeneratorTool(model)
+
+        with observation_context(request_id="request-tutor", user_id=USER_ID):
+            with self.assertLogs(
+                OBSERVABILITY_LOGGER_NAME, level="INFO"
+            ) as captured:
+                result = await tool.invoke("Embedding", "文本会被映射为向量。")
+
+        payloads = [json.loads(record.getMessage()) for record in captured.records]
+        self.assertEqual(result.answer, "表示语义")
+        self.assertEqual(
+            [payload["event"] for payload in payloads],
+            ["llm_call_started", "llm_call_completed"],
+        )
+        self.assertTrue(
+            all(payload["request_id"] == "request-tutor" for payload in payloads)
+        )
+        self.assertEqual(payloads[-1]["component"], "tutor_quiz")
+        self.assertEqual(payloads[-1]["model"], "qwen-test")
+        self.assertFalse(payloads[-1]["token_usage_available"])
 
 
 class TutorWorkflowEvaluationTests(unittest.IsolatedAsyncioTestCase):

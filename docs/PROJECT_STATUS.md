@@ -146,8 +146,11 @@
   HTTP 请求开始/结束事件，以及既有 API 生命周期安全日志迁移。
 - 保留边界：轮转 `RequestHistoryWriter` 继续只持久化白名单 HTTP 元数据；控制台结构化日志
   也拒绝未列入白名单的任意内容字段，不记录问题、回答、Prompt、文件正文、密钥或 URL 查询参数。
-- 当前验证：改动前全量 `400/400`；5.4.1 Logging / Request History / API 专项
-  `45/45`。Request Trace、RAG/LLM/Job 阶段事件、Metrics 和接口尚未进入本子阶段。
+- Stage 5.4.2 已实现：`ContextVar` 贯穿 HTTP、同步线程池、RAG Service、Retriever、
+  RAG ChatModel 与 Tutor 结构化模型调用；LLM usage 仅在返回可用时记录。Document Job
+  入队事件关联原 `request_id`，长期 Worker 使用空 Context 并以 `job_id` 追踪处理状态。
+- 当前验证：改动前全量 `400/400`；5.4.1 专项 `45/45`；5.4.2 Logging / API / RAG /
+  Tutor / Document Job 专项 `97/97`。Metrics 聚合和 Observability 接口尚未实现。
 
 ## 3. 当前正式主链路
 
@@ -174,8 +177,8 @@ BM25 + RRF、Cross-Encoder 和 Structure-aware Chunking 都是已完成、可复
 
 ## 4. 未开始与未验证
 
-- **In Progress：Stage 5.4 Observability。** 当前只完成 5.4.1 Structured Logging Foundation。
-- **Planned：Stage 5.4.2～5.4.4 / BYOK。** 尚未实现的 Trace、Metrics 与集成决策仍是计划。
+- **In Progress：Stage 5.4 Observability。** 当前完成 5.4.1 Structured Logging 与 5.4.2 Request Trace。
+- **Planned：Stage 5.4.3～5.4.4 / BYOK。** Metrics 与集成决策仍是计划。
 - **未验证：** Docker build/up、容器重启恢复、真实 Tutor 全路径质量、当前认证版本的真实付费 RAG 闭环、并发/负载、长时间运行、多实例一致性、生产备份恢复和公开安全验收。
 
 ## 5. 持续同步规则

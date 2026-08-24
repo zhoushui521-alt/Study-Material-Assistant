@@ -1,3 +1,4 @@
+import json
 import unittest
 from unittest.mock import Mock, patch
 
@@ -7,6 +8,7 @@ from app.context_selector import EvidenceScoreContextSelector
 from app.langchain_rag import RAGAnswer
 from app.langchain_store import VECTOR_STORE_DIR
 from app.index_manifest import IndexCompatibilityStatus
+from app.observability import OBSERVABILITY_LOGGER_NAME, observation_context
 from app.rag_service import (
     ADJACENT_WINDOW,
     CONTEXT_LIMIT,
@@ -102,11 +104,13 @@ class RAGServiceTests(unittest.TestCase):
         vector_store._client.close.side_effect = RuntimeError("close failed")
         open_store.return_value = vector_store
 
-        with self.assertLogs("app.rag_service", level="ERROR") as logs:
+        with self.assertLogs(OBSERVABILITY_LOGGER_NAME, level="ERROR") as logs:
             with self.assertRaisesRegex(RAGServiceInitializationError, "没有资料"):
                 create_rag_service()
 
-        self.assertTrue(any("释放 Chroma" in message for message in logs.output))
+        payload = json.loads(logs.records[-1].getMessage())
+        self.assertEqual(payload["event"], "rag_initialization_cleanup_failed")
+        self.assertEqual(payload["error_type"], "RuntimeError")
 
     @patch("app.rag_service.create_rag_chain")
     def test_ask_reuses_one_lcel_chain_across_questions(
@@ -142,6 +146,35 @@ class RAGServiceTests(unittest.TestCase):
         self.assertEqual(
             [call.args[0] for call in chain.invoke.call_args_list],
             ["RAG 是什么？", "为什么要检索？"],
+        )
+
+    @patch("app.rag_service.create_rag_chain")
+    def test_ask_records_service_trace_without_logging_question(
+        self,
+        create_chain: Mock,
+    ) -> None:
+        expected = RAGAnswer(answer="回答", sources=())
+        create_chain.return_value.invoke.return_value = expected
+        service = RAGService(Mock(), Mock(), Mock())
+
+        with observation_context(request_id="request-service", user_id="user-service"):
+            with self.assertLogs(
+                OBSERVABILITY_LOGGER_NAME, level="INFO"
+            ) as captured:
+                result = service.ask("不应进入日志的问题")
+
+        payloads = [json.loads(record.getMessage()) for record in captured.records]
+        self.assertIs(result, expected)
+        self.assertEqual(
+            [payload["event"] for payload in payloads],
+            ["rag_request_started", "rag_request_completed"],
+        )
+        self.assertTrue(
+            all(payload["request_id"] == "request-service" for payload in payloads)
+        )
+        self.assertNotIn(
+            "不应进入日志",
+            "\n".join(record.getMessage() for record in captured.records),
         )
 
     def test_close_is_idempotent(self) -> None:

@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,6 +22,7 @@ from app.langchain_rag import (
     normalize_answer_for_terminal,
 )
 from app.langchain_store import rebuild_vector_store
+from app.observability import OBSERVABILITY_LOGGER_NAME, observation_context
 
 
 class KeywordEmbeddings(Embeddings):
@@ -60,6 +62,48 @@ class LangChainRAGTests(unittest.TestCase):
         self.assertIn("[S1]", prompt_messages[1].content)
         self.assertNotIn("rag-intro.md", prompt_messages[1].content)
         self.assertIn(NO_EVIDENCE_TOKEN, prompt_messages[0].content)
+
+    def test_trace_links_retrieval_and_llm_events_to_one_request(self) -> None:
+        retriever = Mock()
+        retriever.invoke.return_value = [self.document]
+        chat_model = Mock()
+        chat_model.model_name = "qwen-test"
+        chat_model.invoke.return_value = AIMessage(
+            content="长资料应该先切分。[S1]",
+            usage_metadata={
+                "input_tokens": 8,
+                "output_tokens": 4,
+                "total_tokens": 12,
+            },
+        )
+
+        with observation_context(request_id="request-rag", user_id="user-rag"):
+            with self.assertLogs(
+                OBSERVABILITY_LOGGER_NAME, level="INFO"
+            ) as captured:
+                answer_with_retriever("资料太长怎么办？", retriever, chat_model)
+
+        payloads = [json.loads(record.getMessage()) for record in captured.records]
+        self.assertEqual(
+            [payload["event"] for payload in payloads],
+            [
+                "retrieval_started",
+                "retrieval_completed",
+                "llm_call_started",
+                "llm_call_completed",
+            ],
+        )
+        self.assertTrue(
+            all(payload["request_id"] == "request-rag" for payload in payloads)
+        )
+        self.assertTrue(all(payload["user_id"] == "user-rag" for payload in payloads))
+        self.assertEqual(payloads[1]["retrieved_count"], 1)
+        self.assertFalse(payloads[1]["empty_retrieval"])
+        self.assertEqual(payloads[-1]["total_tokens"], 12)
+        self.assertNotIn(
+            "资料太长怎么办",
+            "\n".join(record.getMessage() for record in captured.records),
+        )
 
     def test_builds_explicit_lcel_runnable_with_retrieval_and_branch(self) -> None:
         retriever = Mock()

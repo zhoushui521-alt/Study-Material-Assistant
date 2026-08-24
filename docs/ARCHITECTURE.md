@@ -177,26 +177,36 @@ SQLite。Compose network 只为部署定义清楚边界，不代表存在微服�
 
 ## 8. Observability Layer（Stage 5.4 In Progress）
 
-Stage 5.4.1 已建立标准库结构化日志基础：
+Stage 5.4.1～5.4.2 已建立标准库结构化日志与 Request Trace：
 
 ```text
 HTTP Request
-  → FastAPI Middleware
-  → app.observability
-       ├─ JSON Console Event
-       └─ RequestHistoryWriter（仅完成事件的白名单 HTTP 元数据）
+  → FastAPI Middleware：生成 request_id / 绑定可信 user_id
+  → ContextVar（asyncio.to_thread 自动复制）
+       ├─ RAGService
+       │    → Retriever：数量 / 空召回 / latency
+       │    → ChatModel：model / latency / 可获得的 token usage
+       ├─ Tutor
+       │    → RAGService 或 Quiz / Summary 结构化模型
+       └─ Document Job enqueue：request_id + job_id
+             → 独立空 Context Worker：job_id + status + latency
 ```
 
 每条控制台事件固定包含 `time`、`level`、`service`、`request_id`、`user_id`、
-`event` 和 `duration_ms`。HTTP Middleware 已记录开始与结束、状态码和耗时；服务启动、
-关闭及清理错误也使用同一 Logger。
+`event` 和 `duration_ms`。HTTP、RAG、Retriever、LLM 与 Document Job 都记录稳定事件；
+同一个同步请求可按 `request_id` 关联。LLM token usage 只读取 LangChain 返回 metadata，
+不可获得时记录 `token_usage_available=false`，不做估算。
+
+Document Job 是 HTTP 之外的异步生命周期：入队事件保留原 `request_id` 和 `job_id`；
+Worker 创建时显式使用空 `Context`，后续 processing/completed/failed 只通过 `job_id`
+关联，避免把长期后台任务错误归属于创建 Worker 的首个请求。
 
 `RequestHistoryWriter` 不是完整 Trace Store：它继续轮转保存最小 HTTP 完成记录，且拒绝
-问题、回答、文件正文、Prompt、密钥、任意未知路径与 URL 查询参数。当前控制台 Logger 同样
-只接纳白名单详情字段。
+问题、回答、文件正文、Prompt、密钥、任意未知路径与 URL 查询参数。控制台 Logger 同样只
+接纳白名单详情字段。
 
-尚未实现：Request Context 在 RAG/LLM/Document Job 内部的贯穿、阶段耗时事件、进程内
-Metrics 聚合与 Observability HTTP 接口。这些属于 5.4.2～5.4.4，不能由 5.4.1 外推。
+尚未实现：进程内 Metrics 聚合与 Observability HTTP 接口。OpenTelemetry / LangSmith
+仍处于待评估状态，没有依赖、账号、外部数据发送或费用。
 
 
 ## 9. 当前部署边界

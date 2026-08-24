@@ -38,7 +38,7 @@ from app.material_ingestion import (
     StagedMaterial,
 )
 from app.operation_guard import OperationGuard, OperationPolicy
-from app.observability import OBSERVABILITY_LOGGER_NAME
+from app.observability import OBSERVABILITY_LOGGER_NAME, log_event
 from app.rag_service import RAGService, RAGServiceInitializationError
 from app.request_history import RequestHistoryWriter
 from app.url_safety import UnsafeURLError
@@ -452,6 +452,31 @@ class APITests(unittest.TestCase):
             first.headers[REQUEST_ID_HEADER],
             second.headers[REQUEST_ID_HEADER],
         )
+
+    def test_request_context_reaches_sync_service_thread(self) -> None:
+        service = Mock(spec=RAGService)
+
+        def traced_ask(question: str) -> RAGAnswer:
+            del question
+            log_event(
+                "service_trace_probe",
+                details={"component": "rag_service"},
+            )
+            return RAGAnswer(answer="回答", sources=())
+
+        service.ask.side_effect = traced_ask
+        app.dependency_overrides[get_rag_service_provider] = lambda: lambda: service
+
+        with self.assertLogs(OBSERVABILITY_LOGGER_NAME, level="INFO") as captured:
+            with TestClient(app) as client:
+                response = client.post("/api/ask", json={"question": "测试上下文"})
+
+        payloads = [json.loads(record.getMessage()) for record in captured.records]
+        probe = next(
+            payload for payload in payloads if payload["event"] == "service_trace_probe"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(probe["request_id"], response.headers[REQUEST_ID_HEADER])
 
     def test_lifespan_closes_initialized_service(self) -> None:
         service = Mock(spec=RAGService)

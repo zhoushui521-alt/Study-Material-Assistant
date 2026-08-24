@@ -3,6 +3,7 @@
 import logging
 from pathlib import Path
 from dataclasses import dataclass, field
+from time import perf_counter
 
 from langchain_chroma import Chroma
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -19,6 +20,7 @@ if __package__:
         create_langchain_chat_model,
         create_rag_chain,
     )
+    from app.observability import log_event
     from app.langchain_store import (
         VECTOR_STORE_DIR,
         create_langchain_embeddings,
@@ -39,6 +41,7 @@ else:
         create_langchain_chat_model,
         create_rag_chain,
     )
+    from observability import log_event
     from langchain_store import (
         VECTOR_STORE_DIR,
         create_langchain_embeddings,
@@ -52,7 +55,6 @@ RETRIEVAL_LIMIT = 3
 ADJACENT_WINDOW = 2
 CONTEXT_LIMIT = 8
 RELEVANCE_THRESHOLD = 0.25
-logger = logging.getLogger(__name__)
 
 
 class RAGServiceInitializationError(RuntimeError):
@@ -93,7 +95,30 @@ class RAGService:
 
     def ask(self, question: str) -> RAGAnswer:
         """沿当前进程复用的 LCEL RAG 管道回答问题。"""
-        return self.rag_chain.invoke(question)
+        started = perf_counter()
+        log_event(
+            "rag_request_started",
+            details={"component": "rag_service"},
+        )
+        try:
+            result = self.rag_chain.invoke(question)
+        except Exception as error:
+            log_event(
+                "rag_request_failed",
+                level=logging.ERROR,
+                duration_ms=round((perf_counter() - started) * 1000),
+                details={
+                    "component": "rag_service",
+                    "error_type": type(error).__name__,
+                },
+            )
+            raise
+        log_event(
+            "rag_request_completed",
+            duration_ms=round((perf_counter() - started) * 1000),
+            details={"component": "rag_service"},
+        )
+        return result
 
     def close(self) -> None:
         """幂等释放向量库客户端。"""
@@ -124,9 +149,10 @@ def create_rag_service(
             access="read",
         )
         if index_status is IndexCompatibilityStatus.LEGACY_READ_ONLY:
-            logger.warning(
-                "当前 Chroma 没有 Index Manifest，以 legacy read-only 模式提供问答；"
-                "任何索引写入都会被拒绝，直到显式迁移或重新索引。"
+            log_event(
+                "legacy_index_read_only",
+                level=logging.WARNING,
+                details={"component": "vector_store"},
             )
 
         retriever = HybridRetriever(
@@ -147,8 +173,15 @@ def create_rag_service(
         if vector_store is not None:
             try:
                 _close_vector_store(vector_store)
-            except Exception:
-                logger.exception("RAG 初始化失败后释放 Chroma 客户端失败。")
+            except Exception as cleanup_error:
+                log_event(
+                    "rag_initialization_cleanup_failed",
+                    level=logging.ERROR,
+                    details={
+                        "component": "vector_store",
+                        "error_type": type(cleanup_error).__name__,
+                    },
+                )
         if isinstance(error, RAGServiceInitializationError):
             raise
         raise RAGServiceInitializationError(f"初始化 RAG 服务失败：{error}") from error

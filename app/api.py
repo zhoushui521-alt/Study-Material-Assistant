@@ -80,7 +80,13 @@ from app.operation_guard import (
     OperationGuard,
     OperationProtectionError,
 )
-from app.observability import log_event
+from app.observability import (
+    log_event,
+    reset_request_context,
+    reset_user_context,
+    set_request_context,
+    set_user_context,
+)
 from app.rag_service import (
     RAGService,
     RAGServiceInitializationError,
@@ -735,45 +741,50 @@ async def log_http_request(
     """为每次 HTTP 请求生成 request_id、耗时和最小结构化日志。"""
     request_id = uuid4().hex
     request.state.request_id = request_id
+    request_token = set_request_context(request_id)
+    user_token = set_user_context(None)
     started = perf_counter()
-    log_event(
-        "http_request_started",
-        request_id=request_id,
-        details={"method": request.method, "component": "api"},
-    )
     try:
-        response = await call_next(request)
-    except Exception:
-        if prefers_html_error(request):
-            response = FileResponse(
-                ERROR_PAGE,
+        log_event(
+            "http_request_started",
+            details={"method": request.method, "component": "api"},
+        )
+        try:
+            response = await call_next(request)
+        except Exception:
+            if prefers_html_error(request):
+                response = FileResponse(
+                    ERROR_PAGE,
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    headers=SECURITY_RESPONSE_HEADERS,
+                )
+            else:
+                response = JSONResponse(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    content={"detail": "服务器内部错误。"},
+                )
+            response.headers[REQUEST_ID_HEADER] = request_id
+            write_request_log(
+                request,
+                request_id=request_id,
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                headers=SECURITY_RESPONSE_HEADERS,
+                elapsed_ms=round((perf_counter() - started) * 1000),
+                error_category="unhandled_exception",
             )
-        else:
-            response = JSONResponse(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                content={"detail": "服务器内部错误。"},
-            )
+            return response
+
         response.headers[REQUEST_ID_HEADER] = request_id
         write_request_log(
             request,
             request_id=request_id,
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=response.status_code,
             elapsed_ms=round((perf_counter() - started) * 1000),
-            error_category="unhandled_exception",
+            error_category=getattr(request.state, "error_category", None),
         )
         return response
-
-    response.headers[REQUEST_ID_HEADER] = request_id
-    write_request_log(
-        request,
-        request_id=request_id,
-        status_code=response.status_code,
-        elapsed_ms=round((perf_counter() - started) * 1000),
-        error_category=getattr(request.state, "error_category", None),
-    )
-    return response
+    finally:
+        reset_user_context(user_token)
+        reset_request_context(request_token)
 
 
 def _auth_token(request: Request) -> str | None:
@@ -808,6 +819,7 @@ async def get_current_user(request: Request) -> UserRecord:
             headers={"WWW-Authenticate": "Bearer"},
         ) from error
     request.state.current_user_id = user.user_id
+    set_user_context(user.user_id)
     return user
 
 

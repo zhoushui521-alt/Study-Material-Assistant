@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.evidence import Citation, Evidence, build_evidence_context
 from app.langchain_rag import NO_EVIDENCE_ANSWER, RAGAnswer, source_label
 from app.learning_data import LearningDataStore
+from app.observability import invoke_observed_model, model_identifier
 from app.rag_service import RAGService
 
 
@@ -192,13 +193,20 @@ class QuizGeneratorTool:
     name = QUIZ_TOOL_NAME
 
     def __init__(self, model: BaseChatModel) -> None:
+        self._model_name = model_identifier(model)
         self._structured_model = model.with_structured_output(QuizDraft)
 
     async def invoke(self, topic: str, knowledge_context: str) -> QuizDraft:
         prompt = QUIZ_PROMPT.invoke(
             {"topic": topic, "knowledge_context": knowledge_context}
         )
-        result = await asyncio.to_thread(self._structured_model.invoke, prompt)
+        result = await asyncio.to_thread(
+            invoke_observed_model,
+            self._structured_model,
+            prompt,
+            component="tutor_quiz",
+            model_name=self._model_name,
+        )
         return result if isinstance(result, QuizDraft) else QuizDraft.model_validate(result)
 
 
@@ -206,6 +214,7 @@ class LearningSummaryTool:
     name = SUMMARY_TOOL_NAME
 
     def __init__(self, model: BaseChatModel) -> None:
+        self._model_name = model_identifier(model)
         self._structured_model = model.with_structured_output(LearningSummaryDraft)
 
     async def invoke(
@@ -219,7 +228,13 @@ class LearningSummaryTool:
         prompt = SUMMARY_PROMPT.invoke(
             {"topic": topic, "conversation": conversation_text}
         )
-        result = await asyncio.to_thread(self._structured_model.invoke, prompt)
+        result = await asyncio.to_thread(
+            invoke_observed_model,
+            self._structured_model,
+            prompt,
+            component="tutor_summary",
+            model_name=self._model_name,
+        )
         return (
             result
             if isinstance(result, LearningSummaryDraft)

@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sqlite3
 import uuid
 from collections.abc import Callable, Sequence
+from contextvars import Context
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Literal
 
 import aiosqlite
@@ -20,6 +23,7 @@ from app.material_ingestion import (
     MaterialRollbackError,
     MaterialSyncResult,
 )
+from app.observability import log_event
 from app.operation_guard import OperationGuard, OperationProtectionError
 
 
@@ -476,6 +480,7 @@ class DocumentJobService:
         service._worker_task = asyncio.create_task(
             service._worker_loop(),
             name="document-job-worker",
+            context=Context(),
         )
         service._wake_event.set()
         return service
@@ -499,6 +504,15 @@ class DocumentJobService:
         if len({name.casefold() for name in names}) != len(names):
             raise ValueError("任务不能包含重复文件名。")
         job = await self.store.create_job(user_id, ids, names)
+        log_event(
+            "document_job_enqueued",
+            user_id=user_id,
+            details={
+                "component": "document_job_service",
+                "job_id": job.job_id,
+                "job_status": job.status,
+            },
+        )
         self._wake_event.set()
         return job
 
@@ -541,15 +555,47 @@ class DocumentJobService:
             }
 
     async def _process_job(self, job: DocumentJobRecord) -> None:
+        started = perf_counter()
+        log_event(
+            "document_job_started",
+            user_id=job.user_id,
+            details={
+                "component": "document_job_service",
+                "job_id": job.job_id,
+                "job_status": "processing",
+            },
+        )
         try:
             result = await asyncio.to_thread(self._execute_job, job)
         except Exception as error:
             if isinstance(error, MaterialRollbackError):
                 self._invalidate_rag(job.user_id)
             await self.store.mark_failed(job.job_id, _safe_job_error(error))
+            log_event(
+                "document_job_failed",
+                level=logging.ERROR,
+                user_id=job.user_id,
+                duration_ms=round((perf_counter() - started) * 1000),
+                details={
+                    "component": "document_job_service",
+                    "job_id": job.job_id,
+                    "job_status": "failed",
+                    "error_type": type(error).__name__,
+                },
+            )
             return
         self._invalidate_rag(job.user_id)
         await self.store.mark_completed(job.job_id, result)
+        log_event(
+            "document_job_completed",
+            user_id=job.user_id,
+            duration_ms=round((perf_counter() - started) * 1000),
+            details={
+                "component": "document_job_service",
+                "job_id": job.job_id,
+                "job_status": "completed",
+            },
+        )
 
     async def _worker_loop(self) -> None:
         while not self._closing:

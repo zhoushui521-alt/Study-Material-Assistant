@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +19,7 @@ from app.material_ingestion import (
     MaterialSyncResult,
     StagedMaterial,
 )
+from app.observability import OBSERVABILITY_LOGGER_NAME, observation_context
 from app.operation_guard import OperationGuard
 
 
@@ -188,6 +190,52 @@ class DocumentJobServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(finished.result["filenames"], ["chapter.pdf", "notes.docx"])
         self.manager.estimate_index_batches_batch.assert_called_once_with(upload_ids)
         self.manager.commit_staged_batch.assert_called_once_with(upload_ids)
+
+    async def test_worker_trace_uses_job_id_without_inheriting_request_context(self) -> None:
+        upload_id = "c" * 32
+        await self.service.close()
+        self.manager.inspect_staged.return_value = staged(upload_id, "trace.md")
+        self.manager.estimate_index_batches.return_value = 1
+        self.manager.commit_staged.return_value = MaterialSyncResult(
+            filename="trace.md",
+            operation="add",
+            added=1,
+            deleted=0,
+            unchanged=0,
+            cleanup_pending=False,
+        )
+
+        with observation_context(request_id="request-job", user_id=USER_ID):
+            with self.assertLogs(
+                OBSERVABILITY_LOGGER_NAME, level="INFO"
+            ) as captured:
+                self.service = await DocumentJobService.open(
+                    material_manager_factory=lambda user_id: self.manager,
+                    operation_guard=OperationGuard(),
+                    invalidate_rag=self.invalidated,
+                    database_path=self.database_path,
+                )
+                created = await self.service.enqueue(USER_ID, (upload_id,))
+                finished = await self.wait_finished(created.job_id)
+
+        payloads = [
+            json.loads(record.getMessage())
+            for record in captured.records
+            if json.loads(record.getMessage())["event"].startswith("document_job_")
+        ]
+        self.assertEqual(finished.status, "completed")
+        self.assertEqual(
+            [payload["event"] for payload in payloads],
+            [
+                "document_job_enqueued",
+                "document_job_started",
+                "document_job_completed",
+            ],
+        )
+        self.assertEqual(payloads[0]["request_id"], "request-job")
+        self.assertIsNone(payloads[1]["request_id"])
+        self.assertIsNone(payloads[2]["request_id"])
+        self.assertTrue(all(payload["job_id"] == created.job_id for payload in payloads))
 
     async def test_restart_resumes_persisted_pending_job(self) -> None:
         upload_id = "a" * 32

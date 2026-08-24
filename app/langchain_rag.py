@@ -1,7 +1,9 @@
 """使用 LangChain 组件组织完整的检索增强生成链路。"""
 
+import logging
 import re
 from dataclasses import dataclass
+from time import perf_counter
 
 from langchain_core.documents import Document
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -20,6 +22,7 @@ from langchain_openai import ChatOpenAI
 if __package__:
     from app.chat_client import ChatConfig
     from app.context_selector import BaselineContextSelector, ContextSelector
+    from app.observability import invoke_observed_model, log_event
     from app.evidence import (
         Citation,
         build_evidence_context,
@@ -29,6 +32,7 @@ if __package__:
 else:
     from chat_client import ChatConfig
     from context_selector import BaselineContextSelector, ContextSelector
+    from observability import invoke_observed_model, log_event
     from evidence import (
         Citation,
         build_evidence_context,
@@ -249,11 +253,35 @@ def _retrieve_documents(
     question: str,
     retriever: BaseRetriever,
 ) -> list[Document]:
+    started = perf_counter()
+    log_event(
+        "retrieval_started",
+        details={"component": "retriever"},
+    )
     try:
         documents = retriever.invoke(question)
     except Exception as error:
+        log_event(
+            "retrieval_failed",
+            level=logging.ERROR,
+            duration_ms=round((perf_counter() - started) * 1000),
+            details={
+                "component": "retriever",
+                "error_type": type(error).__name__,
+            },
+        )
         raise LangChainRAGError("检索资料失败。") from error
-    return list(documents or [])
+    result = list(documents or [])
+    log_event(
+        "retrieval_completed",
+        duration_ms=round((perf_counter() - started) * 1000),
+        details={
+            "component": "retriever",
+            "retrieved_count": len(result),
+            "empty_retrieval": not result,
+        },
+    )
+    return result
 
 
 def _select_context(
@@ -275,7 +303,11 @@ def _invoke_chat_model(
     chat_model: BaseChatModel,
 ) -> object:
     try:
-        return chat_model.invoke(prompt_value)
+        return invoke_observed_model(
+            chat_model,
+            prompt_value,
+            component="rag",
+        )
     except Exception as error:
         raise LangChainRAGError("调用 Chat 模型失败。") from error
 
