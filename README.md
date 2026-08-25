@@ -2,13 +2,15 @@
 
 > 一个以个人学习资料为知识边界、强调 Evidence / Citation、可评测 RAG 与可恢复学习流程的 AI 学习应用。
 
+## 项目简介
+
 知行（Study Material Assistant）不是通用聊天壳，也不把"检索到来源"直接等同于"回答可信"。
 它把资料摄取、检索、上下文构造、模型调用、证据引用、Tutor 学习流程和本地工程能力组织在
 一个可检查的系统中，目标是帮助用户从自己的资料里检索、理解、练习和持续学习。
 
 当前版本是**本地单实例、工程边界较完整的 AI 应用原型**。代码、自动化测试和历史受控实验
 已有证据；Docker 镜像构建、云端部署、真实 Provider 兼容矩阵、并发负载与生产安全仍未验收。
-最新已验收工程基线为 `study-material-v2-stage6-final`。
+核心工程基线为 `study-material-v2-stage6-final`；发布准备 checkpoint 为 `study-material-v2-release-1.0`。
 
 ## 项目解决什么问题
 
@@ -212,11 +214,13 @@ study-material-assistant/
 - [5-minute Demo Guide](docs/DEMO_GUIDE.md)：演示脚本、费用边界和故障恢复；
 - [Interview Guide](docs/INTERVIEW_GUIDE.md)：项目介绍、技术追问与证据边界；
 - [Stage 6 Completion Report](docs/stage6-completion-report.md)：最终工程基线与验证记录。
+- [Release 1.0 Completion Report](docs/release-1.0-completion-report.md)：GitHub、安全、部署与最终 Review。
 
 ## Validation
 
-`study-material-v2-stage6-final` 记录的全量自动化结果为 `434/434`。这些测试主要使用
-Fake / Mock、临时 SQLite 和本地文件，证明接口、权限、状态、回退和安全契约；它们不证明
+`study-material-v2-stage6-final` 与本轮 Release 1.0 全量自动化均为 `434/434`；本轮耗时
+`29.440s`、退出码为 `0`。测试主要使用 Fake / Mock、临时 SQLite 和本地文件，证明接口、
+权限、状态、回退和安全契约；它们不证明
 真实 Provider 质量、并发容量、公开安全或用户学习效果。
 
 零付费回归命令：
@@ -239,12 +243,13 @@ node --check web\static\app.js
 - 本地单实例正式主链、自动化回归和历史受控评测；
 - Dockerfile / Compose / Healthcheck / volume 等部署定义。
 
-### Release 1.0 Preparation
+### Release 1.0 - Completed
 
 - GitHub README 与文档入口收敛；
 - Git 历史、ignore 规则、环境模板与 BYOK 公开安全审查；
 - 部署策略、五分钟 Demo 与 Release 完成报告；
-- 不执行 push 或真实云部署。
+- 完成 Release 报告与 `study-material-v2-release-1.0` 本地 Tag；
+- 未执行 push、真实云部署或真实模型调用。
 
 ### Future - 需要独立验收
 

@@ -3,6 +3,7 @@
 > 面向开发、Review 与交接的最小上下文。当前状态以 [PROJECT_STATUS](PROJECT_STATUS.md) 为准，
 > 架构以 [ARCHITECTURE](ARCHITECTURE.md) 为持续文档，
 > [FINAL_ARCHITECTURE](FINAL_ARCHITECTURE.md) 是 Stage 6 的冻结展示快照。
+> Release 发布准备以 [DEPLOYMENT_GUIDE](DEPLOYMENT_GUIDE.md) 与 [Release 1.0 Report](release-1.0-completion-report.md) 为准。
 
 ## 1. 项目是什么
 
@@ -21,8 +22,11 @@
 - Stage 5.5 文档收口：`9ac680a`；
 - Stage 6.1～6.5 checkpoints：`c3c39e0`、`826f75a`、`6f63f6a`、`8554491`、`c773d05`；
 - Stage 6：**Completed**；最终 Tag：`study-material-v2-stage6-final`；
+- Release 1.0 checkpoints：`6cec4c7`（README）、`5dc2292`（Security）、`bade307`（Deployment）；
+- Release 1.0：**Completed**；最终 Tag：`study-material-v2-release-1.0`；
 - 当前分支：`main`；本地提交尚未 push；
 - Stage 6 没有新增核心业务功能，没有引入 Multi-Agent、MCP、GraphRAG、新数据库或微服务。
+- Release 1.0 只修改 README、ignore 与 docs；没有 push、部署、真实模型调用或索引变更。
 
 提交、Tag 与工作区可能继续变化，准确边界必须用当前 `git status`、`git log` 和
 `git tag` 重新确认，不能只依赖本文。
@@ -76,7 +80,7 @@ BM25 + RRF、Cross-Encoder Reranker 与 Structure-aware Chunking 是隔离实验
 | 用户与学习数据 | `get_current_user()` | `auth.py`、`learning_data.py`、`user_workspace.py` |
 | Model Gateway/BYOK | credential API | `app/model_gateway/`、`rag_service.py` |
 | Observability | middleware / model boundary | `observability.py`、`metrics.py`、`request_history.py` |
-| Deployment | `app/server.py` | `app/config.py`、Dockerfile、Compose、`.env.example` |
+| Deployment | `app/server.py` | `app/config.py`、Dockerfile、Compose、`.env.example`、[Deployment Guide](DEPLOYMENT_GUIDE.md) |
 | Evaluation | CLI modules | [EVALUATION](EVALUATION.md) 与 Stage 3 Completion Reports |
 
 不要根据文件名推断“已生效”。从 `app/api.py`、服务创建函数、真实调用链和测试向下确认。
@@ -128,5 +132,6 @@ Git / rules / current evidence
 - 并发、负载、长时间运行、多实例一致性与共享限流；
 - 正式备份恢复、主密钥轮换、公开安全、渗透、SLO 与告警；
 - Claim-level Faithfulness、Citation Support/Accuracy 的稳定基准。
+- 公开仓库 LICENSE 尚未由维护者选择；公开可见不等于已授予开源许可。
 
 这些不是“已经失败”，而是当前证据不足，不能写成已完成。

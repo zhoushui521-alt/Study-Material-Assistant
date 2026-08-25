@@ -4,7 +4,7 @@
 
 ## 同步基线
 
-- 同步日期：2026-08-24
+- 同步日期：2026-08-25
 - 分支：`main`
 - Stage 5.3 起点：`29e7c7e4e11781e26d8cf0dc3a523b83efe6acbd`
 - Stage 5.4 起点：`6f0e770`（`study-material-v2-stage5-part4`）
@@ -17,6 +17,10 @@
 - Stage 6.4 Demo checkpoint：`8554491`
 - Stage 6.5 Interview checkpoint：`c773d05`
 - Stage 6 Final Tag：`study-material-v2-stage6-final`，指向 Stage 6 Completion Report 提交
+- Release 1.0 README checkpoint：`6cec4c7`
+- Release 1.0 Security checkpoint：`5dc2292`
+- Release 1.0 Deployment checkpoint：`bade307`
+- Release 1.0 Final Tag：`study-material-v2-release-1.0`，指向 Release Completion Report 提交
 - 远程边界：本地提交未 push；公开部署状态不能由本地 Git 推断
 - 证据层级：代码实现、自动化测试、历史本地运行、真实模型实验、生产验证分别记录，不能互相替代
 
@@ -208,6 +212,15 @@
   最终全量自动化 `434/434`，并完成代码、文档、部署定义和敏感路径 Review。
 - 证据边界：除文档外只修正 `.gitignore` 与 Compose 镜像标识；未验证 Docker、真实 Provider 或生产环境。
 
+### Release 1.0：GitHub Open Source & Deployment Preparation
+
+- 状态：**Completed（本地发布准备）**；最终边界为 `study-material-v2-release-1.0`。
+- 范围：重构根目录 README、加固 Git/Docker ignore、审计公开仓库敏感路径、补充部署策略、更新 5 分钟 Demo，并生成 [Release 1.0 Completion Report](release-1.0-completion-report.md)。
+- 安全审计：高置信度历史模式未发现私钥、AWS Key、GitHub Token、OpenAI 风格 `sk-`、Google Key、Slack Token 或非空关键环境变量；`.env.example` 是历史中唯一被跟踪的 env 文件名。
+- 自动验证：Model Gateway/API/Observability/Deployment 专项 `25/25`；最终全量自动化 `434/434`，耗时 `29.440s`、退出码 `0`；`pip check` 与前端 JavaScript 语法检查通过。
+- 证据边界：没有修改 RAG、Retrieval、Chunk、Embedding、Reranker、Prompt、Tutor Workflow 或 Model Gateway 核心逻辑；没有 push、Docker build、云部署、真实 Provider 调用、浏览器验收或并发负载测试。
+- 发布边界：仓库当前没有 LICENSE；公开可见不等于已经授予开源许可，维护者仍需在公开发布前选择许可证。
+
 ## 3. 当前正式主链路
 
 当前正式 RAG 仍是 Stage 2 Retrieval baseline，加上 Stage 3.4 Context Selector：
@@ -240,6 +253,7 @@ BM25 + RRF、Cross-Encoder 和 Structure-aware Chunking 都是已完成、可复
 - **未验证：** Docker build/up、容器重启恢复、真实 Provider 与 Tutor 全路径质量、当前
   认证版本的真实付费 RAG 闭环、并发/负载、长时间运行、多实例一致性、凭据备份恢复和公开
   安全验收。
+- **发布待办：** 选择并添加 LICENSE；完成后才能把“公开可见”进一步表述为具有明确授权边界的开源仓库。
 
 ## 5. 持续同步规则
 
@@ -255,9 +269,9 @@ BM25 + RRF、Cross-Encoder 和 Structure-aware Chunking 都是已完成、可复
 
 若文档与代码不一致，先在本文记录差异与证据；不得为了让文档“看起来一致”而自行修改业务代码。
 
-## 6. 当前发现的同步差异
+## 6. 已知历史命名与发布边界
 
-- 用户提供的同步任务假设仓库停在 Stage 5.2，并要求“不要开始 Stage 5.3”；真实 `HEAD` 已是 `study-material-v2-stage5-part3`，用户身份与端到端数据隔离已经完成并形成 checkpoint。
 - 仓库历史同时存在两个“Stage 5.1”语义：`stage5-part1` 是持久化学习数据基础；`stage5-part3` 的报告标题沿用了“Stage 5.1 User Identity”。本文按 Git part 编号同时保留两个历史事实，避免覆盖或改名历史报告。
-- Stage 0、Stage 1、Stage 2 没有独立 Completion Report；Stage 0 也没有独立 Tag。它们的证据强度低于 Stage 3～5，本文已显式标注。
-- README 同时保留早期“阶段 1～7”和 V2 Stage 1～5 两套历史编号，容易混淆。README 本轮只增加状态入口，不重写历史；V2 当前状态以本文为准。
+- Stage 0、Stage 1、Stage 2 没有独立 Completion Report；Stage 0 也没有独立 Tag。它们的证据强度低于 Stage 3～6，本文已显式标注。
+- [Final Architecture](FINAL_ARCHITECTURE.md) 是 Stage 6 冻结展示快照；Release 1.0 的部署与发布事实以 [Deployment Guide](DEPLOYMENT_GUIDE.md) 和 [Release 1.0 Completion Report](release-1.0-completion-report.md) 为准。
+- Release 1.0 已完成本地 GitHub 与部署准备，但没有 push、云部署、真实 Provider 验收或 LICENSE；不能表述成“已经线上运行”或“已经完成法律意义上的开源发布”。
