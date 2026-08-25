@@ -41,7 +41,7 @@ Tag 按任务指定边界保留在 `435ab5e`。MIT LICENSE 是后续独立提交
 
 ## 4. 发布验证
 
-- `git push origin main` 成功，远端 `main` 已更新到 `bbf2bc1`；
+- 初始公开 `git push origin main` 成功，将代码与 LICENSE 推送到 `bbf2bc1`；本报告所在的后续 docs commit 也已推送到 `main`；
 - `git push origin --tags` 成功，共推送 14 个 Stage / Release Tags；
 - GitHub 连接器复核仓库 `visibility=public`、默认分支 `main`；
 - 远端 Release Tag 复核为 `435ab5e`；
