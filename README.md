@@ -1,858 +1,264 @@
-# 学习资料助手
+# AI Learning Companion「知行」
 
-这是一个面向学习资料的 RAG 项目：读入资料、检索相关文本、基于证据回答问题，
-并展示可以核对的来源。
+> 一个以个人学习资料为知识边界、强调 Evidence / Citation、可评测 RAG 与可恢复学习流程的 AI 学习应用。
 
-## 项目文档入口
+知行（Study Material Assistant）不是通用聊天壳，也不把"检索到来源"直接等同于"回答可信"。
+它把资料摄取、检索、上下文构造、模型调用、证据引用、Tutor 学习流程和本地工程能力组织在
+一个可检查的系统中，目标是帮助用户从自己的资料里检索、理解、练习和持续学习。
 
-- [PROJECT_CONTEXT](docs/PROJECT_CONTEXT.md)：开发、Review 与交接所需的最小上下文和边界；
-- [PROJECT_STATUS](docs/PROJECT_STATUS.md)：当前状态唯一入口，记录 checkpoint、证据层级、已完成能力与未验证项；
-- [ARCHITECTURE](docs/ARCHITECTURE.md)：持续维护的当前真实架构；
-- [FINAL_ARCHITECTURE](docs/FINAL_ARCHITECTURE.md)：Stage 6 冻结的作品展示与面试架构快照；
-- [DECISIONS](docs/DECISIONS.md)：由代码、实验和 Completion Report 支撑的关键技术取舍；
-- [EVALUATION](docs/EVALUATION.md)：评测资产、指标、失败分类、费用门槛和运行规范；
-- [RAG_EVALUATION_REPORT](docs/RAG_EVALUATION_REPORT.md)：Stage 2～3 的受控实验汇总、失败案例与正式接入决策；
-- [DEMO_GUIDE](docs/DEMO_GUIDE.md)：五分钟演示脚本、费用边界、故障恢复和完成清单；
-- [INTERVIEW_GUIDE](docs/INTERVIEW_GUIDE.md)：项目介绍、RAG/Agent/工程追问、技术难点和证据边界；
-- [STAGE6_COMPLETION_REPORT](docs/stage6-completion-report.md)：最终验证、Review、修复项与证据边界；
-- [DEVELOPMENT_GUIDE](docs/DEVELOPMENT_GUIDE.md)：本地开发、验证、数据、安全和 Git 工作流。
+当前版本是**本地单实例、工程边界较完整的 AI 应用原型**。代码、自动化测试和历史受控实验
+已有证据；Docker 镜像构建、云端部署、真实 Provider 兼容矩阵、并发负载与生产安全仍未验收。
+最新已验收工程基线为 `study-material-v2-stage6-final`。
 
-README 保留项目介绍与运行方式；阶段状态发生变化时，以 `PROJECT_STATUS.md` 及其链接的 Git Tag、Completion Report 和代码证据为准。
+## 项目解决什么问题
 
-## 快速启动
+普通资料问答常见三个问题：
 
-### 当前服务拓扑
+- 资料分散且篇幅长，模型无法稳定定位真正相关的内容；
+- 回答看起来合理，但来源只是候选列表，无法确认具体主张由哪段资料支持；
+- 优化容易变成堆叠 BM25、Reranker、Agent 等组件，却没有固定基线证明复杂度值得。
 
-当前部署单元是一个 FastAPI 进程：
+知行采用 Evidence First 与 Evaluation Driven 的方式处理这些问题：检索结果先形成请求内
+Evidence Map，模型声明的 Citation ID 再由服务端校验；检索优化则通过固定 Dataset、单变量
+实验、逐案例回归、延迟和调用成本共同决定是否进入正式链路。
 
-```text
-Browser
-  → FastAPI（同源静态前端 + HTTP API）
-  → RAG / Tutor / Document Job Service / Model Gateway / Observability
-  → data/（SQLite + 用户文件 + Chroma + 请求日志）
+## Features
+
+| 能力 | 当前实现 | 证据边界 |
+| --- | --- | --- |
+| RAG Knowledge Base | TXT、Markdown、DOCX、带文字层 PDF 与受控公开网页；暂存、解析、费用估算、增量 Chroma 索引 | 扫描 PDF/OCR、登录网页和批量爬取不支持 |
+| Evidence & Citation | 稳定资料/Chunk 身份、请求内 Evidence Map、服务端 Citation ID 校验与 metadata 回填 | 有效 ID 不自动证明 claim-level 支持度 |
+| Retrieval Evaluation | 固定 Retrieval Dataset、Trace、Recall@K、MRR、nDCG、Context Precision 与失败分类 | 当前 Dataset 较小，历史结果绑定特定 commit 与索引快照 |
+| Tutor Agent Workflow | 单 Tutor LangGraph 路由 QA、解释、练习、总结和学习计划；资料问答复用正式 RAG | 不是 Multi-Agent，真实模型 Tutor 质量矩阵未验收 |
+| Async Document Processing | `202 + job_id`、SQLite Job、单进程串行 Worker、失败落库和重启恢复 | 不是分布式队列，不支持多实例抢占 |
+| Model Gateway & BYOK | RAG / Agent / Tutor 共用 Provider 路由；系统配置或每用户加密 BYOK | 无自动 Failover、价格路由、KMS/HSM 与多凭据 |
+| User Isolation | scrypt 密码、可撤销服务端 Session、用户独立资料目录与 Chroma、业务所有权校验 | 自动化覆盖不等于公开多租户渗透验收 |
+| Observability | Request ID、结构化安全日志、请求历史与单进程聚合指标 | 指标重启清零，无外部 Collector、SLO 和告警 |
+| Docker Readiness | 非 root Dockerfile、单服务 Compose、Healthcheck 与 named volume | 当前 Release 尚未执行 Docker build/up 与云部署 |
+
+正式问答链路不是 BM25 + Dense，也没有接入 Cross-Encoder Reranker。BM25 + RRF、Reranker
+和 Structure-aware Chunking 是已完成的隔离实验；只有通过当前验收门槛的
+`EvidenceScoreContextSelector` 接入正式 RAG。详细数据与取舍见
+[RAG Evaluation Report](docs/RAG_EVALUATION_REPORT.md)。
+
+## Architecture
+
+```mermaid
+flowchart LR
+    U[Browser] --> API[FastAPI<br/>same-origin Web + API]
+    API --> AUTH[Auth & User Scope]
+    AUTH --> MATERIAL[Material Manager<br/>Async Document Job]
+    AUTH --> RAG[RAG Service]
+    AUTH --> LEARNING[Tutor / Study Workflow<br/>Bounded Agent]
+    RAG --> RETRIEVAL[User-scoped Chroma<br/>Retrieval + Context Selector]
+    LEARNING --> RAG
+    RAG --> GATEWAY[Model Gateway<br/>System Key / BYOK]
+    GATEWAY --> PROVIDER[Embedding / Chat Provider]
+    MATERIAL --> DATA[(APP_DATA_DIR<br/>SQLite + Files + Chroma)]
+    AUTH --> DATA
+    API --> OBS[Request ID<br/>JSON Logs + Runtime Metrics]
 ```
 
-原生前端由 FastAPI 直接提供，Document Worker 是应用进程内的单个 `asyncio` Worker。
-因此当前 Compose 不拆分 frontend、worker 或 database 服务；拆分后会超出 SQLite、
-进程锁、Session 和本地 Chroma 的现有一致性边界。完整调用链见
-[ARCHITECTURE](docs/ARCHITECTURE.md)。
+正式 RAG 数据流：
 
-主要技术栈：Python、FastAPI、LangChain/LCEL、LangGraph、Chroma、SQLite、
-原生 HTML/CSS/JavaScript，以及用于公开网页 Markdown 转换的 Crawl4AI。
+```text
+Query Embedding
+  -> 当前用户 Chroma Dense Top 10
+  -> relevance >= 0.25
+  -> 0.8 vector score + 0.2 keyword coverage
+  -> Top 3 Seed + 同源相邻扩展
+  -> EvidenceScoreContextSelector
+  -> Evidence Map
+  -> LCEL Prompt
+  -> Model Gateway / ChatModel
+  -> Citation ID 校验
+  -> Answer + sources + validated citations
+```
 
-### 本地启动
+完整系统图、上传链路、Agent / LangGraph 状态流、持久化与失败边界见
+[Final Architecture](docs/FINAL_ARCHITECTURE.md)。持续变化的事实以
+[Project Status](docs/PROJECT_STATUS.md) 为准。
+
+## Tech Stack
+
+| 分类 | 技术 |
+| --- | --- |
+| Frontend | Native HTML、CSS、JavaScript |
+| Backend | Python 3.12、FastAPI、Uvicorn、Pydantic |
+| AI | LangChain、LCEL、LangGraph、OpenAI-compatible Provider Adapter、Crawl4AI |
+| Retrieval | Chroma、Dense Retrieval、关键词覆盖率重排、Context Selector |
+| Storage | SQLite、per-user filesystem、per-user Chroma、Index Manifest |
+| Infrastructure | Dockerfile、Docker Compose、named volume、Healthcheck |
+| Quality | `unittest`、Retrieval Evaluation、结构化日志、Runtime Metrics |
+
+## Quick Start
+
+### 1. 环境准备
+
+- Python 3.12（与 Dockerfile 基线一致）；
+- PowerShell 或等价终端；
+- 仅运行页面、注册登录和 `/health` 时不需要模型 Key；
+- 索引、RAG、Agent 或 Tutor 会调用外部模型，运行前需确认 Provider、数据发送和费用。
+
+### 2. 安装依赖
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
+```
+
+### 3. 配置环境变量
+
+```powershell
 Copy-Item .env.example .env
+```
+
+在本地 `.env` 中按需要配置：
+
+- `BAILIAN_API_KEY`、`BAILIAN_BASE_URL`：Embedding 与默认 Qwen 配置；
+- `MODEL_API_KEY`、`MODEL_BASE_URL`：Model Gateway 的系统 ChatModel 配置；
+- `MODEL_CREDENTIAL_ENCRYPTION_KEY`：保存用户 BYOK 时必需的 Fernet 主密钥；
+- `APP_DATA_DIR`：SQLite、资料、Chroma、Job 和日志的统一持久化目录。
+
+生成 Fernet Key：
+
+```powershell
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+只把生成结果写入本地 `.env` 或部署平台的 Secret，不要提交、粘贴到 Issue 或输出到日志。
+完整变量和默认值见 [.env.example](.env.example)。
+
+### 4. 启动服务
+
+```powershell
 python -m app.server
 ```
 
-默认访问 `http://127.0.0.1:8000/`，健康检查为
-`http://127.0.0.1:8000/health`。启动和健康检查不会调用 Embedding、ChatModel 或
-Reranker；只有执行需要模型的业务操作才可能产生外部调用与费用。
+访问：
 
-### Docker Compose 启动
+- Web：`http://127.0.0.1:8000/`
+- Health：`http://127.0.0.1:8000/health`
+- OpenAPI：`http://127.0.0.1:8000/docs`
 
-先复制示例配置并按需填写百炼配置：
+启动和 `/health` 不调用 Embedding、ChatModel 或 Reranker。健康检查成功只证明进程可响应，
+不代表模型配置、索引、真实问答或生产依赖已经可用。
+
+## Docker Start
+
+仓库提供单服务 Compose，应用、前端和 Document Worker 运行在同一个进程边界内，持久状态写入
+`zhixing-data` named volume：
 
 ```powershell
 Copy-Item .env.example .env
 docker compose up --build
 ```
 
-镜像构建完成后可直接使用：
+后续启动：
 
 ```powershell
 docker compose up
 ```
 
-默认访问 `http://127.0.0.1:8000/`。Compose 只启动一个应用容器，并把全部持久状态保存到
-`zhixing-data` named volume；`docker compose down` 不会删除该卷。不要在未备份时执行
-会删除 volume 的命令。
-
-### 环境变量
-
-| 变量 | 默认值 | 用途 |
-| --- | --- | --- |
-| `APP_HOST` | `127.0.0.1` | 本地监听地址；Compose 在容器内固定为 `0.0.0.0`。 |
-| `APP_PORT` | `8000` | FastAPI 进程监听端口。 |
-| `APP_DATA_DIR` | `data` | SQLite、用户上传、Chroma、Job、Workflow 与安全请求日志的统一持久化根目录。 |
-| `ZHIXING_PORT` | `8000` | Compose 暴露到宿主机的端口，不传入应用进程。 |
-| `BAILIAN_API_KEY` | 空 | 真实模型调用凭证；缺失时健康检查仍可用，需要模型的请求会明确失败。 |
-| `BAILIAN_BASE_URL` | 空 | 百炼 OpenAI 兼容模式 Base URL。 |
-| `BAILIAN_EMBEDDING_MODEL` | `text-embedding-v4` | Embedding 模型。 |
-| `BAILIAN_EMBEDDING_DIMENSIONS` | `1024` | Embedding 维度。 |
-| `BAILIAN_CHAT_MODEL` | `qwen-plus` | ChatModel 名称。 |
-| `DEFAULT_PROVIDER` | `qwen` | Model Gateway 的系统默认 Provider。 |
-| `DEFAULT_MODEL` | `qwen-plus` | Model Gateway 的系统默认 ChatModel。 |
-| `MODEL_API_KEY` | 空 | 系统 ChatModel Key；仅默认 Qwen 时可回退 `BAILIAN_API_KEY`。 |
-| `MODEL_BASE_URL` | 空 | 服务端控制的 Chat Base URL；用户 BYOK API 不能提交任意地址。 |
-| `MODEL_TIMEOUT` | `60` | ChatModel 单次超时秒数。 |
-| `MODEL_MAX_TOKENS` | 空 | 可选单次生成上限，不等于用户预算或货币成本控制。 |
-| `MODEL_TEMPERATURE` | `0.2` | ChatModel temperature。 |
-| `MODEL_CREDENTIAL_ENCRYPTION_KEY` | 空 | BYOK Fernet 主密钥；必须跨重启稳定。 |
-
-`.env`、`data/` 与真实密钥不会进入 Docker build context，也不得提交到 Git。
-
-### 持久化边界
-
-`APP_DATA_DIR` 或容器中的 `/app/data` 包含：
-
-- `learning/learning.sqlite3`：用户、认证 Session、学习数据与 Tutor checkpoint；
-- `jobs/document_jobs.sqlite3`：异步文档任务；
-- `study_workflows/checkpoints.sqlite3`：Study Workflow checkpoint；
-- `model_gateway/model_credentials.sqlite3`：每用户一条活跃 BYOK 的 Provider、模型与密文；
-- `user_workspaces/<user_uuid>/`：用户文件、暂存区与 Chroma；
-- `request_logs/`：有限轮转的隐私安全请求元数据；
-- `crawl4ai_runtime/`：网页 Markdown 转换运行目录。
-
-这些路径适用于当前单实例 SQLite/Chroma 架构。不要把同一个 volume 同时挂载到多个应用
-副本进行写入。
-
-### 常见问题
-
-- **`/health` 正常但问答失败：** 健康检查只证明 API 进程可响应。继续检查当前用户资料、
-  Index Manifest、Embedding 配置，以及 Model Gateway 的 `DEFAULT_PROVIDER`、模型、系统/BYOK
-  凭据和服务端 Base URL。
-- **宿主机 8000 端口被占用：** 在 `.env` 中修改 `ZHIXING_PORT`，例如 `8012`；
-  容器内端口仍保持 8000。
-- **为什么没有独立 frontend 或 worker 容器：** 当前前端是 FastAPI 同源静态资源，
-  Worker 依赖同进程锁、SQLite 和本地 Chroma；强拆会扩大一致性风险。
-- **为什么没有 PostgreSQL 或 Redis：** 当前目标是可重复启动的单实例部署候选。
-  多实例、独立 Worker 或共享事务吞吐成为真实需求后，再迁移数据库和任务基础设施。
-
-## 当前状态
-
-项目已保留手写 RAG 全链路，并完成 LangChain + Chroma 持久化增量索引、
-混合检索、完整问答、无证据拒答、固定评测集和结构化评测报告。当前支持
-TXT、Markdown、DOCX 和带文字层的 PDF。DOCX 会提取正文段落、1～3 级标题和
-表格文字；不会伪造页码。模型输出残留 `\phi`、`\mu` 曾导致一次真实评测
-只通过 9/10；补充格式归一化和自动回归测试后，最新一次真实固定评测通过 10/10。
-该结果只代表当前版本通过这组案例，不代表所有问题或后续运行都能稳定通过。
-
-当前还提供最小 FastAPI 服务和同源 Web 问答页，包括健康检查、结构化问答接口、
-自动接口文档和基础请求日志；有效 `/api/ask` 已在本地 Uvicorn 中验证返回 `200`。
-Web 页面只复用现有 API，不复制检索、Prompt 或模型调用逻辑。
-
-阶段 1 到阶段 7 的代码与自动验证现已完成：Web 可以一次选择并安全暂存多个
-TXT、Markdown、DOCX 或 PDF，逐文件展示解析成功或失败原因，并在用户二次确认后复用现有
-Chroma 增量同步；同名文件默认拒绝，只有显式选择替换才会更新，删除资料时只定向
-删除对应来源的索引记录。请求元数据会持久化为有限轮转的 JSONL，已有两份评测
-报告可以用零费用 CLI 比较新增失败、恢复案例、案例集合和耗时变化。当前还增加了
-单进程并发拒绝、滚动窗口限流、进程级费用预算、上传解析上限、暂存过期清理、统一
-错误页，以及受限的公开网页抓取、Crawl4AI Markdown 预览和二次确认入库。固定问答流程现已组合为可复用
-的 LCEL Runnable：检索后先判断证据，没有资料时直接拒答并跳过 ChatModel；有资料时
-继续执行 Prompt、ChatModel、字符串解析、格式归一化和来源返回。受限 LangChain
-Agent 通过三个固定工具动态选择资料问答、资料列表或公开网页预览，不具备索引、删除、
-任意文件访问或任意网络访问工具。
-阶段 7 进一步用显式 `StateGraph` 管理学习目标、资料证据、三步任务、人工确认、
-进度和复盘；阶段 6 Agent 只作为受控的资料证据节点，不拥有整个流程控制权。
-V2 Stage 4 在不改动上述旧接口的前提下新增单 Tutor workflow：确定性识别问答、解释、
-练习、总结和学习规划，通过三个受控 Tool 复用现有 RAG、生成结构化练习或总结，并只在
-当前推理中保留有限短期状态。后续持久化阶段增加 SQLite 用户、学习 Session、完整 Tutor
-对话、学习行为与异步文档任务；stage5-part3 再用邮箱密码、可撤销服务端 Session、
-`current_user` 和每用户独立资料/Chroma 工作区建立可信身份与数据隔离。前端不再提交
-可伪造的 `user_id`。
-
-上传、网页预览、替换、删除、回滚、日志轮转、报告对比和阶段 3 保护已经通过 Fake/Mock 自动
-测试。用户随后在本地页面完成了一次真实 PDF 上传、费用确认、增量索引和问答：索引
-结果为新增或更新 6、删除 0、未变化 141，问答返回了 PDF 页码来源。这证明当前样例
-闭环可用，但不等同于并发压测、长期稳定性或对所有资料类型的普遍验证。
-
-手写版本继续保留，用于解释 RAG 底层原理和对照框架行为。阶段 5 已完成本地
-Crawl4AI 转换、Fake/Mock 安全验证，以及用户在本地页面对
-`https://www.qiuzhi2046.com/` 的真实公开网页 Markdown 预览验收；该网页的付费确认
-入库和问答闭环仍未验收。阶段 6 Agent 已通过 Fake/Mock 工具选择和失败路径验证，
-但尚未调用真实工具调用模型。阶段 7 LangGraph 工作流已通过 Fake/Mock 和本地 SQLite
-关闭后重开恢复测试，但同样尚未进行真实模型工作流验收。
-
-## 运行
-
-在项目目录执行：
+默认访问 `http://127.0.0.1:8000/`。停止但保留数据：
 
 ```powershell
-python -m app.chunk_documents
+docker compose down
 ```
 
-程序会读取 `data/documents/` 中的 `.txt`、`.md`、`.docx` 和带文字层的 `.pdf` 文件，
-并打印每个文本块的来源、编号和内容预览。PDF 使用 `pdfplumber` 提取文字层，
-再按页变成独立资料单元，
-因此来源会保留文件名和页码；纯扫描图片或加密 PDF 暂不支持，程序会给出
-错误提示，扫描件需要先进行 OCR。复杂数学公式可能出现 `(cid:xx)`、符号丢失
-或阅读顺序变化，引用公式时需要回看原始 PDF。
+不要在没有备份时删除 `zhixing-data` volume，也不要让多个应用副本同时写入同一份
+SQLite / Chroma 数据。当前 Release 环境没有 Docker CLI，因此以上是仓库定义的启动方式，
+不是本轮已执行通过的容器验收。部署前请先完成镜像构建、Health、持久化重启与备份恢复验证。
 
-DOCX 使用 `python-docx` 按文档顺序提取普通段落和表格，并把 Heading 1/2/3
-保留为可检索的 section。它没有 PDF 那样可靠的固定分页，所以来源只记录标题层级、
-段落序号或表格序号，不生成 page。当前不处理旧版 `.doc`、图片 OCR、SmartArt、
-批注、修订、页眉页脚、宏、复杂公式或 Word 的视觉渲染；空白、损坏及伪装 DOCX
-会在暂存阶段被拒绝。
-
-## 关键词检索
-
-```powershell
-python -m app.search_documents
-```
-
-按提示输入关键词或一个简短问题，例如 `RAG`、`LangChain` 或 `RAG 为什么要切分文本？`。程序会显示命中的文本块和来源。
-
-## 验证 Embedding API
-
-1. 将 `.env.example` 复制为 `.env`。
-2. 在 `.env` 中填写 `BAILIAN_API_KEY`，以及百炼控制台 API 文档提供的 OpenAI 兼容模式 `BAILIAN_BASE_URL`。
-3. 打开 `app/embed_text.py`，点击 VS Code 右上角 ▶，输入一句文字。
-
-成功后会打印向量维度和前 8 个数字。请勿提交 `.env`，它已被 `.gitignore` 排除。
-
-## 语义检索与 RAG 问答
-
-打开以下文件并点击 VS Code 右上角 ▶：
-
-- `app/vector_search.py`：输入“资料太长怎么办？”，观察相似度排序；
-- `app/ask_documents.py`：输入“RAG 为什么要切分文本？”，观察回答与来源。
-
-`ask_documents.py` 会额外使用 `.env` 中的 `BAILIAN_CHAT_MODEL`（默认 `qwen-plus`）。如果控制台提示该模型无权限，请在百炼控制台选择已开通的 Qwen 对话模型，并将其模型名填入 `.env`。
-
-## LangChain + Chroma
-
-首次导入资料或资料发生变化时，运行 `app/index_langchain.py`。它会比较当前
-资料 ID 与 Chroma 中已有 ID，只向量化新增或变化的文本块、删除已经失效的
-旧记录，并保留未变化的向量。向量库持久化在 `data/vector_store/`，同目录的
-`index_manifest.json` 记录 Embedding、集合、距离度量、Parser/Chunker 和 Metadata
-Schema 版本。已有记录但没有 Manifest 的旧索引只允许问答读取；同步和删除会明确
-失败，不会自动清空或迁移。
-需要显式迁移时，必须按 [Legacy Index Migration Runbook](docs/legacy-index-migration-runbook.md)
-先生成只读计划和本地候选索引，再在停服后提升；不要直接修改正式 Chroma 文件。
-该命令会调用真实 Embedding API，可能产生费用；运行前应先确认解析结果。
-
-索引成功后，运行 `app/search_langchain.py`。当前正式 Retrieval 仍采用 Stage 2 Baseline：
-Chroma Dense Vector 先从完整语料召回 Top 10，再按 80% 向量相关度 + 20% 关键词
-覆盖率重排并选择 Top 3 Seed。后续提问只需要向量化问题，不会重新向量化全部资料。
-Stage 3.1 已实现 BM25 + Dense + RRF 双路实验能力，但受控 A/B 没有证明它在当前
-Top 3 Seed 主链路上稳定优于 Baseline，因此没有替换正式问答 Retriever。
-Stage 3.4 在 Retriever 完成同源 ±2 相邻扩展后增加 Context Selector：保留全部 Seed，
-并为每个 Seed 只选择一个关键词覆盖率最高的已有相邻 Evidence，再构建请求内 Evidence
-ID。该步骤不重新召回，也不修改 Dense、阈值、排序、Top-K 或 Chunking。
-
-完整 LangChain RAG 入口为 `app/ask_langchain.py`：
-
-```powershell
-python -m app.ask_langchain "资料太长应该怎么办？"
-```
-
-它通过包装 Chroma 的混合 Retriever 检索资料，使用 `ChatPromptTemplate`
-组织上下文，为每条上下文证据分配 `S1`、`S2` 等请求内 ID，再调用百炼 OpenAI
-兼容 ChatModel 生成回答。服务端只接受当前上下文真实存在的 ID，并回填文件名、页码、
-摘录和定位信息；`sources` 继续表示兼容用检索候选，`citations` 才表示验证后的实际引用。
-资料没有直接提供答案时，程序会返回统一的证据不足提示。
-该命令会调用真实 Embedding 和 Chat API，可能产生费用。
-
-### LCEL 固定问答管道
-
-`app/langchain_rag.py` 中的 `create_rag_chain()` 使用 `RunnableLambda`、
-`RunnableParallel`、`RunnableBranch` 和 `StrOutputParser` 组合以下固定流程：
+## Project Structure
 
 ```text
-问题 → 当前检索基线 → Context Selector → Evidence Map → 有无证据分支
-     → Prompt → ChatModel → 文本解析 → 归一化与来源
+study-material-assistant/
+|-- app/                 FastAPI、RAG、摄取、Agent、Workflow、Gateway 与评测逻辑
+|   \-- model_gateway/   Provider 路由、Adapter 与 BYOK 密文存储
+|-- web/                 同源原生前端与静态资源
+|-- tests/               Fake/Mock、临时 SQLite 与契约回归测试
+|-- evaluation/          固定数据集与版本化评测输入
+|-- docs/                架构、状态、决策、Demo、面试与阶段报告
+|-- Dockerfile           非 root 单应用镜像定义
+|-- docker-compose.yml   单服务、Healthcheck 与 named volume
+|-- .env.example         无密钥的配置模板
+\-- requirements.txt     锁定的 Python 运行依赖
 ```
 
-CLI 与 FastAPI 问答都通过 `RAGService` 执行；每个服务实例在初始化时只构造一次
-Runnable 并复用。兼容入口 `answer_with_retriever()` 也调用同一个管道工厂。无检索结果时走拒答
-分支，不调用 ChatModel；模型返回证据不足标记时仍会清空来源并使用统一拒答文本。
-这仍是可预测、可测试的两步 RAG，不是由模型动态选择工具的 Agent，也不负责
-LangGraph 的状态、路由或恢复。LCEL 层没有叠加额外重试，外部客户端继续使用现有
-的有限超时与重试配置。
+本地运行生成的 `.env`、数据库、上传资料、Chroma、日志、缓存和评测结果不属于源码，
+不得提交到公开仓库。
 
-## 固定 RAG 评测集
+## Documentation
 
-`evaluation/rag_cases.json` 保存 10 个固定案例，覆盖 Markdown 回归、PDF 概念、
-跨段检索、相近概念和无证据拒答。每个非拒答案例都声明预期来源和答案必含要点，
-评测程序还会检查引用标签及终端公式格式。
+### 开始开发与理解项目
 
-直接运行不会产生 API 请求，只会显示费用提示：
+- [Project Context](docs/PROJECT_CONTEXT.md)：开发、Review 与交接的最小上下文；
+- [Project Status](docs/PROJECT_STATUS.md)：当前阶段、Git checkpoint、证据层级和未验证项；
+- [Development Guide](docs/DEVELOPMENT_GUIDE.md)：本地开发、验证、数据和 Git 工作流。
+
+### 架构与工程决策
+
+- [Final Architecture](docs/FINAL_ARCHITECTURE.md)：Stage 6 冻结展示架构；
+- [Architecture](docs/ARCHITECTURE.md)：持续维护的真实架构；
+- [Decisions](docs/DECISIONS.md)：由代码和实验支撑的关键取舍。
+
+### Evaluation、Demo 与面试
+
+- [Evaluation Guide](docs/EVALUATION.md)：Dataset、指标、失败分类与费用门槛；
+- [RAG Evaluation Report](docs/RAG_EVALUATION_REPORT.md)：Stage 2～3 受控实验汇总；
+- [5-minute Demo Guide](docs/DEMO_GUIDE.md)：演示脚本、费用边界和故障恢复；
+- [Interview Guide](docs/INTERVIEW_GUIDE.md)：项目介绍、技术追问与证据边界；
+- [Stage 6 Completion Report](docs/stage6-completion-report.md)：最终工程基线与验证记录。
+
+## Validation
+
+`study-material-v2-stage6-final` 记录的全量自动化结果为 `434/434`。这些测试主要使用
+Fake / Mock、临时 SQLite 和本地文件，证明接口、权限、状态、回退和安全契约；它们不证明
+真实 Provider 质量、并发容量、公开安全或用户学习效果。
+
+零付费回归命令：
 
 ```powershell
-python -m app.evaluate_rag
-```
-
-确认批量评测费用后才运行：
-
-```powershell
-python -m app.evaluate_rag --confirm-api-cost
-```
-
-该命令会对每个案例调用一次真实 Embedding，并在检索到资料时调用 Chat API；
-同时复用正式问答入口的检索参数和 RAG 链路。评测完成后，终端输出仍会保留，
-并在 `evaluation/results/` 生成一份唯一命名的 UTF-8 JSON 报告。报告记录运行时间、
-评测集版本和 SHA-256、检索参数、模型名称、汇总及全部案例明细，但不记录 API Key
-或 Base URL。失败案例也会写入报告；报告无法写入时程序会返回清晰错误。
-
-如需把报告写到其他目录，可增加：
-
-```powershell
-python -m app.evaluate_rag --confirm-api-cost --results-dir <目录>
-```
-
-`evaluation/results/` 是本地运行历史，默认被 `.gitignore` 忽略，避免持续增长的生成
-文件和完整回答被意外提交。最近一次真实固定评测基线为 10/10；此前柯西分布回答
-残留 LaTeX 命令的问题已在针对性格式修复后的真实复测中通过。固定案例只能证明
-当前版本通过这 10 个问题，不能替代更大评测集、人工检查或未来版本复测。
-
-## Stage 2：独立 Retrieval Evaluation 与 Trace
-
-`evaluation/retrieval_cases.json` 是与上述端到端问答 heuristic 分离的 Retrieval
-Dataset。每个可回答案例分别保存不依赖当前切块编号的 `Stable Gold Meaning`，以及
-可随 Chunker 更新的 `Current Chunk Mapping`（`chunk_id`、`material_id` 和
-`content_hash`）；`legacy_chunk_index` 只用于人工定位，不参与 Gold 身份判定。
-
-`app/retrieval_evaluation.py` 复用当前生产检索公式，并以 Evaluation 专用结构化 Trace
-记录 Raw Vector Candidates、0.25 阈值过滤、80/20 Hybrid Ranking、Top 3 Seed、同源
-±2 Adjacent Expansion 和最多 8 块 Final Context。Trace 只记录身份、分数、排名、原因、
-大小和本地耗时，不写入候选正文；没有可靠 tokenizer 时 `token_size` 明确为 `null`。
-报告提供 Raw/Ranked Recall@1/3/5/10、MRR、nDCG@5、Final Context Recall 和 Context
-Precision，并把 Recall、Filtering、Ranking、Context Construction 与 Unanswerable
-Handling Failure 分开。单 Gold 案例上的 nDCG 与 MRR 信息高度重合，主要在 Multi-Gold
-案例中提供额外排序信息。
-
-以下命令默认只显示费用边界，不打开索引、不调用 API：
-
-```powershell
-python -m app.evaluate_retrieval
-```
-
-显式确认后，Runner 先完成 Git commit、Dataset、Gold Mapping、Retrieval Config 和报告
-输出位置 preflight，再把当前 Chroma 复制为 disposable Evaluation Snapshot。每个案例调用
-一次真实 Query Embedding，并在案例完成后把结果原子持久化到唯一 JSON run state；最终聚合
-可从已持久化的 per-case results 重建。Evaluation 只查询 snapshot，退出后以目录和文件内容
-SHA-256 指纹验证原始 Index 未变化；不调用 ChatModel，不迁移 legacy index，也不自动补
-Manifest：
-
-```powershell
-python -m app.evaluate_retrieval --confirm-query-embedding-cost
-```
-
-Stage 2 可以确定性验证 Citation ID 是否存在于本次 Evidence Map；Citation Coverage
-仍需要 Claim 标注，Citation Support 仍需要人工或经授权的 Judge。有效 Citation ID
-不等于 Evidence 真正支持对应 Claim。
-
-修复 crash-safe Runner 后，已在 commit `0d9f2fe` 上完成一次 10 案例、10 次真实
-Query Embedding、0 次 ChatModel 的 `local_real_retrieval` Baseline。报告记录的 Ranked
-Recall@1/3/5/10 为 `0.3333 / 0.8333 / 0.8333 / 0.9444`，MRR 为 `0.6111`，
-nDCG@5 为 `0.6422`；存在 1 个 Ranking Failure 和 1 个 Unanswerable Handling Failure。
-该报告绑定当时的 commit、Dataset 和 Index 指纹，不代表资料或索引变化后的当前指标。
-
-## Stage 3.1：BM25 + Dense Vector + RRF
-
-Stage 3.1 只改变 Candidate Generation 与 Ranking。Dense 保持 Top 10 和 0.25 阈值，
-BM25 从完整 Corpus 独立取 Top 10，RRF 使用 `k=60`；后续 Top 3 Seed、同源 ±2
-Adjacent Expansion、最多 8 个 Context Chunk、Evidence、Citation、Prompt 和 LLM
-流程保持不变。旧 Dense + Keyword Coverage 公式仍作为同次实验中的 Baseline。
-
-以下命令默认只显示费用边界，不打开索引、不创建 Embedding Client：
-
-```powershell
-python -m app.evaluate_hybrid_retrieval
-```
-
-显式确认后，每个 Stage 2 Retrieval Case 只调用一次真实 Query Embedding，同一次
-Dense 结果同时供 Baseline 与 Hybrid 使用；BM25、RRF 和报告聚合均为本地计算，
-Chat/LLM 调用为 0：
-
-```powershell
-python -m app.evaluate_hybrid_retrieval --confirm-query-embedding-cost
-```
-
-报告分别保存 Baseline/Hybrid 的 Recall@1/3/5/10、MRR、nDCG@5、指标差值、逐案例
-Gold 排名变化和两条 Pipeline 的本地延迟。代码与 Fixture/Mock 测试不能代替这次真实
-受控实验。
-
-2026-08-20 已在同一 disposable snapshot 上完成 10 个案例、10 次真实
-`text-embedding-v4` Query Embedding、0 次 ChatModel 的 `local_real_retrieval` A/B：
-
-- Recall@1：`0.3333 → 0.3333`
-- Recall@3：`0.8333 → 0.8333`
-- Recall@5：`0.8333 → 0.9444`
-- Recall@10：`0.9444 → 0.9444`
-- MRR：`0.6111 → 0.5778`
-- nDCG@5：`0.6422 → 0.6561`
-- 平均本地 Retrieval 延迟：`149.0 ms → 149.4 ms`
-
-Hybrid 把 `wishart_definition` 的最佳 Gold 从第 6 名提升到第 3 名，但把
-`cauchy_properties` 从第 2 名降到第 5 名，并把 `dirichlet_definition` 从第 2 名降到
-第 3 名。由于正式链路只选择 Top 3 Seed，Recall@3 没有提升且 MRR 下降，当前结论是
-“证明了 Sparse 独立召回的补充价值，但尚未证明 RRF 配置整体优于 Baseline”。因此
-正式问答继续使用 Stage 2 Baseline；Stage 3.2 是否引入 Reranker，应先扩大评测集并
-定位 RRF 的排序退化，而不是直接继续叠加组件。
-
-## Stage 3.2：Cross-Encoder Reranker 受控实验
-
-Stage 3.2 在不修改 Dense、BM25、RRF、Chunk、Evaluation Dataset 和 Context
-Construction 的前提下，只对 Stage 3.1 的 RRF Candidate Pool 执行本地 Cross-Encoder
-重排。正式 `RAGService` 仍使用 Stage 2 Baseline，实验不会自动进入问答主链路。
-
-费用与模型下载都需要显式确认：
-
-```powershell
-python -m app.evaluate_reranker `
-  --confirm-query-embedding-cost `
-  --confirm-model-download-and-local-inference
-```
-
-2026-08-20 使用固定 revision 的 `BAAI/bge-reranker-base`、CPU、最多 20 个候选，完成
-10 个案例、10 次成功运行 Query Embedding、130 对本地 Pair Scoring、0 次 ChatModel
-的 `local_real_cross_encoder` A/B/C。C 相对 B 的 Recall@1/3 分别提高 `0.5000 / 0.1111`，
-MRR 提高 `0.3481`，nDCG@5 提高 `0.2454`；但 Context Precision 降低 `0.0119`，平均
-Retrieval 延迟增加约 `2862.4 ms`。因此当前只保留隔离实验能力，不接入正式 Pipeline。
-完整证据和边界见 `docs/stage3-2-completion-report.md`。
-
-## Stage 3.3：Structure-aware Chunking 受控实验
-
-Stage 3.3 只改变 Chunking Strategy。A 使用正式 Pipeline 当前的固定 180 字符策略；
-B 按标题、段落、连续列表和代码块组织内容，超限时按句子、词和字符回退，最大 600
-字符、0 overlap。Embedding、Dense Top 10、0.25 阈值、80/20 排序、Top 3 Seed、同源
-±2 Adjacent Expansion 和 Context Limit 8 全部冻结。正式 `build_chunks()`、资料摄取与
-RAG Pipeline 保持不变。
-
-默认运行只解析资料、重建 Gold Mapping 并显示费用边界，不创建 Embedding Client：
-
-```powershell
-python -m app.evaluate_chunking
-```
-
-真实 A/B 会使用同一 Embedding 配置在临时目录分别重建索引，并需要同时确认索引与查询
-费用；生产索引只做只读核验与前后指纹检查：
-
-```powershell
-python -m app.evaluate_chunking `
-  --confirm-controlled-index-embedding-cost `
-  --confirm-query-embedding-cost
-```
-
-当前 10 案例真实实验中，Chunk 数 `147 → 55`，Recall@1、MRR、nDCG@5 分别提升
-`0.2222 / 0.0315 / 0.0598`；但 Recall@3、Context Precision、Final Context Recall
-分别下降 `0.1667 / 0.0298 / 0.2222`，并新增 Recall / Ranking Failure。因此只保留
-隔离实验能力，不把 `structure-aware-block-600-overlap-0-v1` 接入生产 Pipeline。
-完整证据和边界见 `docs/stage3-3-completion-report.md`。
-
-## Stage 3.4：Context Optimization 受控实验
-
-Stage 3.4 冻结 Stage 2 Retrieval、固定 180 字符 Chunk、Embedding、阈值、Top 3 Seed、
-同源 ±2 Adjacent Expansion 和最多 8 块的 A 组 Context。B 组只在已扩展 Evidence 内
-选择：保留全部 Seed，再为每个 Seed 选择一个 query keyword coverage 最高的相邻块；
-分数并列时按更近距离和原 Context 顺序稳定处理。没有重新召回，也没有模型选择器。
-
-以下命令复用已完成的 Stage 2 Retrieval Trace，并在 disposable index snapshot 中核对
-对应 Chunk；不会调用 Query Embedding、ChatModel 或 Reranker：
-
-```powershell
-python -m app.evaluate_context
-```
-
-当前 10 案例 `local_historical_retrieval_trace_replay` 结果：Context Precision
-`0.1500 → 0.2000`，Final Context Recall 保持 `1.0000`，平均 Context Chunk
-`7.3 → 5.2`，平均字符 `1222.2 → 848.7`，Selector 平均增量约 `0.1042 ms`。
-10 个案例均未移除 Gold；`mysql_out_of_scope` 仍返回 6 块 Context，因此无答案处理仍是
-未解决边界。当前没有与 ChatModel 匹配的可靠 tokenizer，Token 数明确未测量。
-
-由于 Precision 提升、Recall 保持且本地增量延迟很小，B 组已进入正式 `RAGService`
-的 LCEL Pipeline。结论只绑定当前 10 案例与历史 Retrieval Trace，不代表真实回答质量、
-Citation Support、并发或生产稳定性。完整证据见 `docs/stage3-4-completion-report.md`。
-
-## 最小 FastAPI 服务
-
-启动本地服务：
-
-```powershell
-python -m uvicorn app.api:app --host 127.0.0.1 --port 8000 --no-access-log
-```
-
-启动后可访问：
-
-- `GET http://127.0.0.1:8000/`：打开最小 Web 问答页；页面加载只调用零费用的
-  `/health`，不会自动发起问答；
-- `GET http://127.0.0.1:8000/health`：只检查 API 进程是否响应，不读取模型配置、
-  不打开 Chroma，也不调用 Embedding 或 Chat API；
-- `POST /api/auth/register`：提交 `email`、至少 10 字符的 `password` 与
-  `display_name`；密码只以 scrypt 哈希保存，成功后设置 HttpOnly 登录 Cookie；
-- `POST /api/auth/login`、`POST /api/auth/logout`、`GET /api/auth/me`：登录、撤销当前
-  服务端 Session 与读取当前身份；
-- 下述业务接口都要求同源登录 Cookie 或有效 `Authorization: Bearer <token>`；用户归属
-  只取后端验证后的 `current_user`，不接受客户端 `user_id` 作为身份来源；
-
-- `POST http://127.0.0.1:8000/api/ask`：请求体为
-  `{"question": "RAG 为什么需要切分资料？"}`，返回 `answer` 和 `sources`；
-- `POST http://127.0.0.1:8000/api/agent`：请求体必须包含
-  `{"message": "列出当前资料", "confirm_api_cost": true}`；可选
-  `"allow_web_preview": true` 只授权本次请求预览用户明确提供的公开 URL；返回
-  `answer`、`sources` 和 `tools_used`；
-- `POST http://127.0.0.1:8000/api/tutor/chat`：请求体为
-  `{"message": "帮我出题练习 Embedding", "session_id": "<UUID>",
-  "confirm_api_cost": true}`；Session 必须属于当前登录用户；返回 Tutor 意图、学习动作、
-  Evidence/Citation、可选练习或总结，并持久化成功的对话与学习行为；
-- `POST /api/sessions`：请求体为 `{"topic": "Embedding"}`，为当前用户创建 Session；
-  `GET /api/sessions` 最多返回当前用户最近 100 个 Session；
-- `GET /api/history`：最多返回当前用户最近 100 条 Tutor 消息和 100 条学习记录；
-  可用 `session_id=<UUID>` 查询参数限定到属于该用户的 Session；
-- `POST http://127.0.0.1:8000/api/study-workflows`：请求体为
-  `{"goal": "理解 RAG 的证据约束", "confirm_api_cost": true}`；调用一次受限 Agent
-  整理资料证据、生成三步计划，并在返回前暂停等待人工确认；
-- `POST /api/study-workflows/{workflow_id}/confirm`：用
-  `{"decision": "approve"}` 或 `{"decision": "reject"}` 恢复同一检查点；
-- `POST /api/study-workflows/{workflow_id}/progress`：使用 `note` 和
-  `complete_current_task` 零模型调用地更新进度；失败工作流的 `/retry` 需要再次确认
-  API 费用且最多一次；`GET` 读取最新状态，`DELETE` 经确认后删除全部本地检查点；
-- `GET http://127.0.0.1:8000/api/materials`：零费用列出当前资料文件；
-- `POST http://127.0.0.1:8000/api/materials/stage`：以 `multipart/form-data`
-  暂存并本地解析单个资料，不读取模型配置、不打开 Chroma；
-- `POST http://127.0.0.1:8000/api/web-materials/preview`：请求体为
-  `{"url": "https://example.com/", "operation": "add"}`，安全抓取单个公开网页、
-  使用 Crawl4AI 生成 Markdown 并暂存；不打开 Chroma，也不调用 Embedding 或 Chat；
-- `POST http://127.0.0.1:8000/api/materials/{upload_id}/index`：请求体必须为
-  `{"confirm_api_cost": true}`；明确确认后创建持久化后台任务并立即返回 `202`、
-  `job_id` 和初始状态，不在该请求内执行重解析、Embedding 或 Chroma 写入；批量入口
-  `/api/materials/batch/index` 使用同一任务契约；
-- `GET http://127.0.0.1:8000/api/jobs/{job_id}`：查询文档任务的
-  `pending / processing / completed / failed` 状态、粗粒度进度、失败原因和完成后的索引
-  摘要；
-- `DELETE http://127.0.0.1:8000/api/materials/{filename}`：请求体必须为
-  `{"confirm_delete": true}`，删除资料文件和对应来源的 Chroma 记录，不调用 Embedding；
-- `GET http://127.0.0.1:8000/docs`：FastAPI 自动生成的 Swagger UI。
-
-每个 HTTP 响应都会带一个由服务端生成的 `X-Request-ID`。Uvicorn 控制台还会输出
-对应的单行 JSON，例如：
-
-```text
-{"timestamp":"2026-08-08T01:00:00Z","event":"http_request_completed","request_id":"...","method":"POST","path":"/api/ask","status_code":200,"elapsed_ms":1260,"error_category":null}
-```
-
-日志只记录请求 ID、方法、已匹配路由、状态码、耗时和错误类别；不记录查询参数、
-请求体、问题、回答、来源、异常原文、API Key 或 Base URL。未知路由统一记为
-`unmatched`。启动命令使用 `--no-access-log` 关闭可能包含原始 URL 和查询参数的
-Uvicorn 默认访问日志，由上述结构化日志替代。相同的安全字段还会追加到
-`data/request_logs/http_requests.jsonl`；单文件达到 1 MiB 前会轮转，最多保留
-3 份备份。持久化失败不会影响 HTTP 响应，也不会把原始异常写入日志。
-
-当前错误类别包括 `request_validation`、`rate_limited`、`rag_processing`、`rag_unavailable`、
-`agent_processing`、`agent_timeout`、`agent_protected`、`tutor_processing`、
-`tutor_timeout`、`tutor_protected`、`workflow`、
-`workflow_protected`、`web_preview`、
-`web_preview_protected`、`client_error`、`server_error` 和
-`unhandled_exception`。未预期异常会返回不含内部
-异常信息的通用 `500`，并保留可与日志关联的 `X-Request-ID`；为避免敏感信息进入
-控制台，当前不会记录异常原文或完整 traceback。
-
-`/api/ask` 会在第一次问答时按需构造并复用现有 `HybridRetriever`、ChatModel 和
-LCEL Runnable，没有复制另一套检索或 Prompt。每次有效问答会产生一次真实问题 Embedding；检索到
-资料时还会产生 Chat API 调用，因此可能产生费用。问题为空、仅含空白、超过 2000
-个字符或包含未声明字段时返回 `422`；RAG 初始化失败返回不含内部配置的 `503`，
-检索或 ChatModel 失败返回不含堆栈及敏感详情的 `502`。
-
-`/api/agent` 每次都要求 `confirm_api_cost=true`，因为即使最终只列出本地资料，Agent
-也需要模型判断工具。它最多调用 Agent 路由模型 3 次、总工具 2 次，其中资料问答和
-网页预览各最多 1 次；资料问答工具还会按现有 RAG 链调用问题 Embedding 和 ChatModel。
-Agent 执行最多等待 90 秒；已经进入同步 RAG 的外部调用仍受各自客户端超时约束。
-`answer_from_materials` 复用上述 LCEL RAG，并由
-服务端保留原始回答和来源，避免 Agent 二次改写证据；`list_available_materials` 只列
-文件名与大小；`preview_web_material` 还要求本次请求显式授权，只复用安全预览且永不
-写入索引。工具异常会转换为不含 URL、密钥、路径和原始异常的安全结果。
-
-## V2 Stage 4：Tutor Agent + LangGraph Learning Workflow
-
-`app/tutor_workflow.py` 使用一个显式 `StateGraph` 组织单 Tutor 学习流程。Router 采用
-可复现的确定性分类，不额外调用模型；Knowledge Retrieval Tool 直接复用
-`RAGService.ask()`，所以 Stage 3 的 Context Selector、Evidence 与 Citation 契约继续
-生效。Quiz Generator Tool 和 Learning Summary Tool 使用当前 ChatModel 的结构化输出，
-资料不足时不会继续生成练习或基于模型知识补全。
-
-Stage 4 最初使用 `InMemorySaver`，最多保留最近 20 条、合计 12000 字符，并让“继续出
-一道题”等续问继承上一轮 topic。该阶段当时不支持进程重启恢复；这一限制由后续
-Stage 5.1 的持久化数据层替代。旧 `/api/ask`、`/api/agent` 和
-`/api/study-workflows` 继续可用。QA、解释和
-学习规划最多执行现有 RAG 的 Query Embedding 与 Chat 调用；Quiz 和
-新主题 Summary 会在此基础上增加一次结构化 Chat 调用；Session Summary 只执行一次
-结构化 Chat 调用。完整边界和验证证据见 `docs/stage4-completion-report.md`。
-
-## 历史 checkpoint：Persistent Learning Data Foundation（stage5-part1）
-
-`app/learning_data.py` 使用 SQLite、`aiosqlite` 和显式 SQL 管理 `users`、
-`learning_sessions`、`conversation_messages`、`learning_records` 与
-`schema_migrations`。数据库默认位于 `data/learning/learning.sqlite3`，并被
-`.gitignore` 排除。首次打开会在事务中应用版本 1 迁移；高于程序支持版本的数据库会
-拒绝打开，不会猜测降级。
-
-Tutor 不把长期学习历史拼进 Prompt，也不把 LangGraph State 当作长期业务数据库：
-每次调用先按 `user_id + session_id` 校验归属，从业务表加载最近有限对话作为当前推理
-输入；LangGraph 使用同一数据库文件中的 `AsyncSqliteSaver` 保存线程级短期 checkpoint；
-成功后再以一个业务事务写入 user/tutor 两条消息、学习动作和更新后的 Session topic。
-因此服务关闭重开后仍能继续同一 Session，而完整历史和学习行为有独立、可查询的数据
-模型。
-
-本阶段选择 SQLite 是因为当前仍是本地单实例原型，并且仓库已经锁定
-`aiosqlite` 与 `langgraph-checkpoint-sqlite`；没有真实并发或部署证据支持立即引入
-PostgreSQL、连接池和新迁移框架。当前只建立基于 UUID 和外键查询的用户数据分区，
-当时尚无认证授权；这份历史边界由 stage5-part3 身份与隔离阶段补齐。原始设计证据保留在
-`docs/stage5-1-completion-report.md`，没有被新报告覆盖。
-
-
-## V2 Stage 5.2：Async Document Processing Pipeline
-
-`app/document_jobs.py` 使用独立 SQLite 数据库
-`data/jobs/document_jobs.sqlite3` 持久化文档 Job，并由单进程 `asyncio` Worker 串行消费。
-现有资料暂存与费用预估仍是零模型调用的同步本地校验；用户确认费用后，索引 API 只校验
-暂存文件、创建 `pending` Job 并返回，真正的资料重解析、Chunk 构建、Embedding、Chroma
-增量同步和 RAG 缓存失效由 Worker 完成。Worker 没有复制摄取实现，而是继续调用
-`MaterialManager.estimate_index_batches*()` 和 `commit_staged*()`，因此 Manifest 只读保护、
-单次/进程费用上限、文件补偿回滚和现有 Parser/Chunker/Embedding 契约保持不变。
-
-Job 支持 `pending`、`processing`、`completed`、`failed` 四种状态。进程重启时，尚未开始的
-`pending` Job 会继续处理；中断时已经是 `processing` 的 Job 会被明确标记为 `failed`，
-不会假装仍在执行，也不会在外部调用结果不确定时自动重复付费。当前进度是
-`0 / 10 / 100` 的阶段信号，不是 Embedding 百分比。完整设计、验证证据和边界见
-`docs/stage5-2-completion-report.md`。
-
-## V2 Stage 5 / part3：User Identity & Data Isolation
-
-当前身份系统使用 SQLite 保存用户与可撤销服务端 Session：密码通过标准库 scrypt 加盐
-哈希，浏览器只持有 HttpOnly、SameSite=Strict Cookie，数据库只保存令牌 SHA-256。相比
-JWT，这更适合当前同源原生前端与本地单实例 FastAPI：退出可立即撤销，不需要密钥轮换和
-JWT 黑名单；代价是后续多实例部署需要共享 Session Store。
-
-所有资料、RAG、Agent、Tutor、Session、历史、文档 Job 与 Study Workflow 请求都从
-后端 `current_user` 取得身份。每个用户拥有
-`data/user_workspaces/<user_uuid>/{documents,pending_uploads,pending_deletions,vector_store}`；
-RAG、Citation 和 Agent 只打开该用户 Chroma，因此另一用户的文件名、摘录、
-`material_id` 和 Citation 不会进入候选上下文。业务表通过 `user_id` 与复合外键约束
-Session、Conversation、Learning Record 的归属，Job 与 Workflow 查询也校验所有权。
-
-旧匿名用户、Session、对话和学习记录由 Schema v2 原样保留；旧消息从 Session 反填直接
-`user_id`。旧全局资料/Chroma 与无归属 Job 不会自动分配给新账户，避免“第一个注册者认领
-全部旧数据”；活动旧 Job 会明确失败，后续如需认领必须执行显式、可审计迁移。完整设计、
-迁移、安全边界与验证证据见
-`docs/stage5-1-user-identity-completion-report.md`。
-
-## 阶段 7：LangGraph 学习规划工作流
-
-`app/study_workflow.py` 使用 `StateGraph` 显式定义请求路由、目标校验、Agent 资料证据、
-计划生成、人工确认、计划激活/拒绝、进度更新和最终复盘节点。创建工作流会调用阶段 6
-Agent，因此必须确认费用；图在 `interrupt()` 处暂停，确认接口使用相同 `thread_id`
-和 `Command(resume=...)` 恢复。批准后第一项任务进入 `in_progress`，每次进度调用只更新
-本地状态，三项任务完成后生成确定性复盘；拒绝后不会写入进度或继续调用模型。
-
-检查点保存在 `data/study_workflows/checkpoints.sqlite3`，由
-`langgraph-checkpoint-sqlite` 持久化，并使用禁用 pickle fallback、显式空模块白名单的
-严格序列化器。数据库被 `.gitignore` 忽略，保存目标、Agent 证据、来源、计划和进度，
-不保存服务对象、密钥或原始异常；它是未加密的本地开发数据，不应同步或公开。每条
-进度最多 100 项，失败不会自动重试付费 Agent；只有资料证据节点失败时，用户才能在
-再次确认费用后手动重试一次。`DELETE` 接口可删除指定工作流的全部检查点。
-
-Web 页面使用项目内原生 HTML、CSS 和 JavaScript，没有引入前端框架或外部资源。
-页面会展示答案、候选来源和 `X-Request-ID`，并在请求期间禁用提交按钮以降低重复
-点击造成重复计费的风险。只有点击“向资料提问”或按 `Ctrl + Enter` 才会调用
-`/api/ask`；一次有效问题会产生真实 Embedding，并可能产生 Chat API 费用。
-
-## 上传与增量索引
-
-页面上传分为两步：
-
-1. “本地校验与解析”会逐文件检查安全文件名、扩展名、MIME、文件大小和内容特征，
-   复用 `app/chunk_documents.py` 解析和切块，不调用真实 API；
-2. 页面分别展示成功文件和失败原因。一个文件失败不会掩盖其他完整暂存结果，也不会
-   产生临时索引；
-3. 页面汇总文本块数和预计 Embedding 批次数，只有再次点击“确认费用并写入索引”，
-   才把成功文件作为独立 Material 一次提交，并复用一次
-   `app.langchain_store.sync_vector_store()`。
-
-单次最多接收 20 个文件，每个文件不超过 10 MiB。支持 UTF-8 TXT、Markdown、DOCX
-和带文字层 PDF；PDF 最多 200 页，每个文件最多提取 200,000 个字符，整批切块后预计最多 60 个
-Embedding 批次；阻止目录、盘符、路径分隔符、Windows 保留名、伪造 PDF、伪造 DOCX
-和二进制文本。DOCX 即使被客户端声明为通用 ZIP MIME，也必须通过完整 OOXML 结构
-校验后才能暂存；旧版 `.doc` 仍不支持。同名
-新增返回冲突，不会静默覆盖；替换必须在页面明确选择。上传和替换失败会恢复原文件
-并补偿同步旧索引；删除失败会把隔离文件移回正式资料目录，但无法证明定向删除完全
-回滚时会返回 `503` 并提示人工检查索引。索引成功或回滚状态不确定后，进程内缓存的
-RAG 服务会关闭并在下一次问答时重新初始化，避免继续持有旧资料状态。
-
-## 阶段 5：公开网页预览与确认入库
-
-先安装锁定依赖；当前实现使用 Crawl4AI 的本地 HTML 清理和 Markdown 生成能力，
-不需要额外运行浏览器安装命令：
-
-```powershell
-python -m pip install -r requirements.txt
-```
-
-页面中的“导入公开网页”仍复用现有两步入库链路：
-
-1. 服务端只接受默认端口的 HTTP/HTTPS URL，默认要求解析得到的全部地址均为公网 IP；
-   实际连接固定到本轮已校验地址，并在最多 5 次重定向中的每一跳重新做 URL、DNS 和
-   地址校验，以降低内网访问、云元数据访问、DNS 重绑定和重定向绕过风险；
-2. 单页 HTML 最大 2 MiB，HTTP 连接与读取链路共享 20 秒预算，只接受 HTML 且不接受
-   压缩响应；初次 DNS 解析仍受操作系统解析器时限约束。Crawl4AI 在已安全获取的原始
-   HTML 上移除脚本、表单、iframe、图片等内容并生成最多 30,000 字的 Markdown；
-   预览阶段只写入受限暂存目录，不读取模型配置、不打开 Chroma；
-3. 暂存文件保存 canonical URL、标题、UTC 抓取时间和待索引正文 SHA-256，读取时会
-   复核正文哈希；索引来源保留原始
-   URL。只有用户再次点击“确认费用并写入索引”，才调用现有增量索引和 Embedding。
-
-第一版只支持公开、免登录的单个静态 HTML 页面，不执行站点 JavaScript，不支持
-Cookie、登录态、代理、Stealth、自定义 Hook/脚本、批量站点爬取或反爬绕过。网页正文
-属于不可信资料；现有 RAG Prompt 明确将资料视为参考信息而非可执行指令，但仍需人工
-检查预览、遵守目标网站条款，并把 Prompt Injection 视为残余风险。项目使用
-[Crawl4AI](https://github.com/unclecode/crawl4ai) 完成网页 HTML 到 Markdown 的提取。
-
-如果可信本机代理使用 Fake-IP DNS，并把正常域名解析到 `198.18.0.0/15`，可以只在
-启动 Uvicorn 的当前 PowerShell 终端显式开启兼容模式：
-
-```powershell
-$env:STUDY_MATERIAL_ALLOW_PROXY_FAKE_IP="true"
-.\.venv\Scripts\python.exe -m uvicorn app.api:app --host 127.0.0.1 --port 8011 --no-access-log
-```
-
-兼容模式只允许“域名 DNS 解析结果”使用 `198.18.0.0/15`，用户直接输入该网段 IP、
-localhost、内网、链路本地和云元数据地址仍会被拒绝；初始 URL 与每次重定向使用同一
-规则。该模式依赖可信本机代理接管 Fake-IP 连接，只适用于本地开发，不得在公开部署中
-启用。关闭当前终端即可清除该进程环境变量，也可以执行：
-
-```powershell
-Remove-Item Env:STUDY_MATERIAL_ALLOW_PROXY_FAKE_IP
-```
-
-## 阶段 3：稳定性与安全保护
-
-本地单进程使用一个非阻塞独占保护器协调问答、Agent、学习工作流、网页预览、暂存、索引和删除：已有受保护操作
-执行时，新操作立即返回 `429`，不会无限排队。滚动窗口和费用保护默认值为：
-
-- 问答每 60 秒最多 5 次、当前进程最多 50 次；
-- Agent 每 60 秒最多 3 次、当前进程最多 20 次；
-- 零模型的工作流确认、进度和删除合计每 60 秒最多 10 次；
-- 索引每小时最多确认 5 次；调用 Embedding 前会按 Chroma 现有 ID 重新计算实际待新增
-  文本块，单次最多 60 个逻辑批次、当前进程最多 200 批；
-- 本地暂存和删除各每 60 秒最多 10 次；
-- 公开网页预览每 60 秒最多 3 次；
-- 超过 24 小时的、名称符合上传 ID 格式的暂存目录会被安全清理；
-- Embedding 客户端超时为 30 秒，外部 API 最多重试 2 次。
-
-频率限制或繁忙响应会尽量返回 `Retry-After`；进程预算耗尽后不会自动恢复，必须先
-确认真实费用和运行状态，再由操作者决定是否重启。所有计数都保守地在操作开始前
-记入，失败调用不会自动退还额度。索引回滚为恢复资料与索引一致性，必要时可能执行
-一次额外的有界补偿同步。这些限制只存在于当前 Python 进程内，不支持多
-进程共享，也不能替代鉴权、用户级配额、反向代理限流和平台侧账单告警。
-
-`app/url_safety.py` 已接入 `app/web_materials.py`：只接受默认端口的 HTTP/HTTPS，禁止
-凭据和片段，并要求域名解析得到的所有 A/AAAA 地址都是公网地址；实际连接固定到校验
-结果，每次重定向重新解析和校验，以防止 DNS 重绑定和重定向绕过。策略依据
-[OWASP SSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html)
-和 Python [`ipaddress.is_global`](https://docs.python.org/3/library/ipaddress.html#ipaddress.IPv4Address.is_global)
-语义制定。
-
-## 请求历史与评测报告对比
-
-持久化请求历史只包含固定的安全字段，不包含请求体、问题、回答、来源、查询参数、
-密钥、Base URL 或异常原文。`data/request_logs/` 已被 `.gitignore` 忽略。
-
-比较两份已有评测报告不会调用任何模型：
-
-```powershell
-python -m app.compare_rag_reports <基线报告.json> <当前报告.json>
-```
-
-如需独占创建一份对比 JSON：
-
-```powershell
-python -m app.compare_rag_reports <基线报告.json> <当前报告.json> --output <对比报告.json>
-```
-
-命令会比较评测集 SHA-256、通过数量、新增失败、恢复案例、新增/删除案例和耗时变化。
-出现新增失败时退出码为 `1`；输入或写入错误为 `2`。若两份评测集 SHA-256 不同，
-报告会明确警告总通过率不能直接比较。
-
-当前 API 已覆盖本地问答、受限 Agent、可恢复学习工作流、上传与增量索引、资料删除、有限请求历史和单进程保护，但
-仍未实现鉴权、跨进程/跨实例配额和公开服务所需的完整并发性能基线，不应直接作为
-公网生产服务部署。
-
-## 验证
-
-不调用真实 API 的本地检查：
-
-```powershell
-python -m unittest discover -s tests -v
-python -m compileall app tests
-python -m pip check
+.\.venv\Scripts\python.exe -B -m unittest discover -s tests -p 'test_*.py' -q
+.\.venv\Scripts\python.exe -m pip check
 node --check web\static\app.js
 ```
 
-## 能力演进与当前边界
+真实 Retrieval / RAG 评测有单独费用确认参数。不要为了验证 README 直接运行付费评测；
+运行条件、调用数量和报告口径见 [Evaluation Guide](docs/EVALUATION.md)。
 
-下表保留项目从教学实现到 V2 工程主链的能力里程碑。它不是当前 V2 Stage 的顺序或状态事实源；
-当前 checkpoint、证据层级和未验证项以 [PROJECT_STATUS](docs/PROJECT_STATUS.md) 为准。
-显式 LCEL、受限 Crawl4AI、单个受限 Agent 和 LangGraph Workflow 均已实现；表中的早期
-“阶段 6/7”等编号只代表历史开发顺序，不能与当前 V2 Stage 6 混用。
+## Roadmap
 
-状态标记：
+### Completed
 
-- **当前已完成**：已有真实代码和相应验证证据；
-- **历史验证**：表内数字只代表对应 checkpoint，不自动继承为当前真实模型或部署验收；
-- **后续触发**：只有真实问题、规模或评测证据出现后才进入，不按技术清单预排。
+- Stage 0～6：架构审计、Evidence / Citation、Retrieval Evaluation、受控 RAG 优化、Tutor、
+  持久化与用户隔离、异步任务、可观测性、Model Gateway、Demo 与作品化收口；
+- 本地单实例正式主链、自动化回归和历史受控评测；
+- Dockerfile / Compose / Healthcheck / volume 等部署定义。
 
-### 当前已完成
+### Release 1.0 Preparation
 
-| 阶段 | 主要内容 | 完成标志 | 关键依赖 / 边界 |
-| --- | --- | --- | --- |
-| **当前已完成 1：资料解析与手写 RAG** | TXT、Markdown、PDF 解析；固定字符切分；关键词检索；手写 Embedding、余弦相似度和端到端 RAG。 | CLI 可以基于本地资料回答并展示来源。 | 手写版本用于解释底层原理，后续阶段不得删除或改写成框架版本。 |
-| **当前已完成 2：LangChain + Chroma 增量索引** | Chroma 本地持久化；稳定文档 ID；新增、变化和失效内容同步。 | 未变化资料不会重复向量化，已有索引可复用。 | 真实索引会产生 Embedding 费用；自动测试只能使用 Fake/Mock。 |
-| **当前已完成 3：混合检索与完整 RAG** | HybridRetriever、向量与关键词混合排序、邻接文本扩展、来源标签、无证据拒答和输出归一化。 | CLI 与 API 复用同一套 Retriever、Prompt 和回答处理逻辑。 | 当前参数只通过固定小型评测集校准，不代表对所有资料普遍最优。 |
-| **当前已完成 4：PDF 中文正文解析** | 使用 pdfplumber 按页提取带文字层 PDF，并保留页码来源。 | 中文正文基本可读；扫描件、加密或损坏 PDF 有清晰错误。 | 复杂公式仍可能出现符号丢失、`(cid:xx)` 或阅读顺序问题。 |
-| **当前已完成 5：固定评测与 JSON 报告** | 10 个固定案例；来源、引用、必含词、拒答、LaTeX 和耗时检查；唯一 JSON 报告。 | 最新一次真实固定评测通过当前 10/10 案例，失败案例也能保存。 | 10/10 只代表这 10 个案例；模型输出具有概率性，修改后仍需复测。 |
-| **当前已完成 6：最小 FastAPI 服务** | `/health`、`/api/ask`、`/docs`；惰性 RAG 初始化；安全的 422、429、502、503 和 500 错误。 | 本地真实 `/api/ask` 已返回 `200`；健康检查不调用模型或产生费用。 | 当前主要调用为同步方式，阶段 3 保护只覆盖单进程。 |
-| **当前已完成 7：基础结构化请求日志** | `X-Request-ID`；状态码、耗时和错误类别的单行 JSON 控制台日志。 | 页面请求 ID 能与 Uvicorn 日志关联，不记录问题、回答、来源和敏感配置。 | 已由阶段 2 增加有限 JSONL 持久化；启动时仍需使用 `--no-access-log` 关闭原始访问日志。 |
-| **当前已完成 8：最小 Web 问答页** | 原生 HTML、CSS 和 JavaScript；API 状态、登录注册、个人资料管理、问题输入、答案、来源、错误和请求 ID 展示。 | 用户已在历史版本完成真实问答与上传闭环；当前认证页面通过静态结构与 API 自动化验证。 | 本轮应用内浏览器连接被 Windows 沙箱阻断，登录后的真实视觉回归尚未完成。 |
-| **当前已完成 9：上传与增量索引** | 单文件安全暂存；本地解析；二次费用确认；新增、显式替换、删除、失败回滚和 RAG 服务刷新。 | Fake/Mock 覆盖上传、变化、删除、失败和安全边界；用户已真实验证 PDF 上传、增量索引和来源问答。 | 真实入库会产生 Embedding 费用；尚未进行并发、长时间和多类型资料矩阵验收。 |
-| **当前已完成 10：运行历史与评测对比** | 隐私安全请求元数据持久化为 1 MiB、3 备份的轮转 JSONL；零费用比较两份结构化评测报告。 | 能标出新增失败、恢复案例、案例集合和耗时变化；评测集 SHA 不同时给出不可直接比较的警告。 | 请求历史仍只适合本地单进程；固定案例结果不能外推为普遍效果。 |
-| **当前已完成 11：阶段 3 稳定性与安全保护** | 非阻塞单进程独占、滚动窗口限流、问答/索引进程预算、上传解析上限、暂存 TTL、外部调用超时重试、统一错误页和 URL 公网校验基础。 | Fake/Mock 覆盖繁忙、频率、预算、PDF/字符/批次限制、清理和私网/混合 DNS 拒绝；本地页面/API 以零费用方式验证。 | 当前已有最小身份认证，但仍无用户级费用配额、分布式保护和并发压测；网页预览保护仍只适用于本地单进程。 |
-| **当前已完成 12：阶段 4 LCEL 管道化 RAG** | 将“问题 → 检索 → 证据判断 → Prompt → 模型 → 结果处理”组合为可复用 Runnable，并保留混合检索、拒答、归一化和来源契约。 | CLI 与 FastAPI 经 `RAGService` 复用同一管道；Fake/Mock 验证成功、拒答、检索失败、模型失败和无证据时跳过 ChatModel。 | 本阶段未调用付费 API；此前真实 10/10 评测早于本次 LCEL 改造，不能作为改造后的真实效果证据。 |
-| **当前已完成 13：阶段 5 Crawl4AI 网页资料导入** | 公网 URL/DNS/每跳重定向校验；固定到已验证 IP 的受控单页抓取；Crawl4AI 本地 Markdown 预览；来源元数据；复用现有暂存与确认索引链路。 | Fake/Mock 覆盖 SSRF、重定向、超限、错误映射和隐私日志；本地原始 HTML 已实际通过 Crawl4AI 清理转换，API/UI 契约已自动验证；用户已在本地页面完成 `qiuzhi2046.com` 的真实公开网页 Markdown 预览。 | 真实网页付费入库与问答仍未验收；不支持 JavaScript 渲染、登录态或批量爬取。部分代理/Fake-IP DNS 环境会把域名映射到保留测试网段并被 SSRF 保护正确拒绝。 |
-| **当前已完成 14：阶段 6 LangChain Agent 工具编排** | 使用 `create_agent` 编排 `answer_from_materials`、`list_available_materials` 和 `preview_web_material` 三个受限工具；提供 `/api/agent`、单次费用确认、网页预览独立授权、模型/工具/总时限和单进程预算。 | Fake/Mock 验证工具选择、LCEL 回答与来源逐字保留、网页预览不入库、未授权拒绝、工具异常脱敏、重复付费工具限制、超时和 API 错误契约。 | 尚未调用真实工具调用模型，不能把自动测试当作真实 Agent 效果验收；没有索引、删除、任意文件或任意网络工具，也没有对话记忆和自定义 LangGraph 状态流。 |
-| **当前已完成 15：阶段 7 LangGraph 学习规划工作流** | 用显式 `StateGraph` 管理目标、受控 Agent 证据节点、三步计划、`interrupt` 确认、批准/拒绝分支、进度、复盘、一次手动重试和 SQLite 检查点删除。 | Fake/Mock 覆盖完整状态流、路由原因、费用确认、拒绝后停止、进度上限和隐私日志；真实 SQLite 文件关闭并重开后可以读取并恢复等待确认的线程。 | 尚未调用真实模型验收工作流效果；检查点是未加密的本地单实例数据，没有鉴权、跨实例锁、后台清理或任意对话长期记忆。 |
-| **当前已完成 16：历史 stage5-part1 持久化学习数据** | 服务端 UUID 用户、学习 Session、Tutor 消息、学习行为、版本迁移和 SQLite LangGraph checkpoint。 | 临时真实 SQLite 覆盖创建、归属分区、历史查询和关闭重开后的 Tutor 续学。 | 当时只有 UUID 分区；stage5-part3 已在其上补齐可信身份与所有权检查。 |
-| **当前已完成 17：V2 Stage 5.2 异步文档处理** | SQLite Job、单进程后台 Worker、任务状态查询、启动恢复和失败落库；确认索引接口改为返回 `202 + job_id`。 | Fake/Mock 与临时真实 SQLite 覆盖单文件/批量成功、失败、去重、重启继续 pending、处理中断转 failed 和 API 查询。 | 暂存预解析仍同步；stage5-part3 已为 Job 增加所有权，仍没有分布式队列、多实例抢占、自动重试或负载测试。 |
-| **当前已完成 18：V2 Stage 5 / part3 身份与数据隔离** | 邮箱注册登录、scrypt 密码哈希、可撤销服务端 Session、`current_user`、复合外键、每用户资料/Chroma 与 Job/Workflow 所有权。 | 392 项 Fake/Mock/临时 SQLite 回归覆盖认证失败、A/B 数据隔离、Tutor、Material、Vector Retrieval、Citation 来源、Job 与 Workflow IDOR。 | 仍是本地单实例 SQLite；无 OAuth、RBAC、密码重置、登录限流、多实例 Session、数据库加密、生产备份或公开部署验收。 |
-| **当前已完成 19：V2 Stage 5.3 / part4 服务化与部署准备** | 统一 Settings、`app.server`、非 root Dockerfile、单服务 Compose、named volume、Healthcheck、README 与部署边界。 | 新增专项 8/8、全量 400/400；本机 `app.server`、Health、首页和静态资源 HTTP 200；Compose YAML 可解析。 | 当前机器没有 Docker CLI，build/up、容器重启恢复、公开部署、HTTPS、负载与生产备份均未验证。 |
-| **当前已完成 20：V2 Stage 5.4 可观测性** | 统一 JSON 事件、Request ID 跨线程/Job 传播、匿名单进程指标和受鉴权 Metrics API。 | Completion Report、专项测试与全量回归可复核。 | 指标重启清零，无外部 Collector、跨实例聚合、SLO 或生产告警。 |
-| **当前已完成 21：V2 Stage 5.5 Model Gateway** | 正式 RAG/Agent/Tutor 统一 Provider 路由；系统配置与用户 BYOK；Fernet 密文、用户隔离和安全错误映射。 | 代码 checkpoint `d54a90b` 与 [Stage 5.5 Completion Report](docs/stage5-5-completion-report.md)。 | 无自动 Failover、价格表、KMS/HSM、多凭据或公开安全验收。 |
-| **当前已完成 22：V2 Stage 6 作品化收口** | 最终架构、工程上下文、RAG 评测汇总、五分钟 Demo、面试材料和最终质量审查。 | [Stage 6 Completion Report](docs/stage6-completion-report.md) 与 Tag `study-material-v2-stage6-final`。 | 收口和验证不会把本地单实例原型升级为生产系统。 |
+- GitHub README 与文档入口收敛；
+- Git 历史、ignore 规则、环境模板与 BYOK 公开安全审查；
+- 部署策略、五分钟 Demo 与 Release 完成报告；
+- 不执行 push 或真实云部署。
 
-### 后续触发条件
+### Future - 需要独立验收
 
-| 方向 | 当前缺口 | 进入条件 |
-| --- | --- | --- |
-| **Evaluation 深化** | Dataset 小、不可回答失败仍在、缺少稳定 Answer/Faithfulness/claim-level Citation 指标。 | 扩大并冻结独立基准集后，按单变量实验重新评估当前正式链路。 |
-| **生产演进** | 未验证 Docker build/up、并发、长时间、多实例、备份恢复、外部监控、密钥托管和公开安全。 | 先定义真实用户范围、容量、SLO、数据合规与部署目标，再决定 PostgreSQL、外部队列或观测平台。 |
+- Docker build/up、容器持久化重启和备份恢复；
+- 单实例云端部署、HTTPS、Secret 管理和公开安全检查；
+- 当前认证版本的真实 Provider / RAG / Tutor 兼容与质量矩阵；
+- 并发、负载、长时间运行和明确 SLO；
+- 扩大 Retrieval / Answer / Faithfulness / claim-level Citation 基准集。
 
-后续不预排固定 Stage，也不按技术清单加入 Multi-Agent、MCP、GraphRAG 或分布式组件。
-现有四类能力的职责仍必须分开：
+Multi-Agent、MCP、GraphRAG、Redis、外部队列和多实例不会为了技术展示自动加入；只有真实
+需求、现有瓶颈和评测证据同时成立时才重新评估。
 
-- **LCEL**：固定、可组合、可测试的 RAG 能力管道；
-- **Crawl4AI**：网页资料采集与 Markdown 预览，不负责回答和流程控制；
-- **LangChain Agent**：由模型在受限工具集合中动态选择下一步；
-- **LangGraph**：显式管理状态、节点、路由、中断、恢复和人工确认。
+## Public Release Boundary
 
-### 可选增强
-
-| 能力 | 采用条件 | 当前边界 |
-| --- | --- | --- |
-| 多 Agent 协作 | 单 Agent 和受控 LangGraph 节点已经无法清晰覆盖真实需求，并且有可验证的职责拆分。 | 不纳入第一版完成标准，不为了简历技术名堆叠而引入。 |
-| 长期记忆 | 已明确需要跨会话保留哪些用户状态、保留期限、删除方式和隐私边界。 | 当前只规划工作流状态恢复，不默认保存任意对话或用户内容。 |
-| 复杂自适应抓取 | 基础公开网页导入稳定，并有合法性、资源成本和反爬策略评估。 | 暂不支持登录态、Stealth、任意脚本、自动绕过限制或无边界深度抓取。 |
-
-规划阶段的 API 和术语以当前官方文档为准：
-
-- [LangChain Runnables / LCEL](https://reference.langchain.com/python/langchain-core/runnables)
-- [LangChain Agents 与 `create_agent`](https://docs.langchain.com/oss/python/langchain/agents)
-- [LangGraph Graph API](https://docs.langchain.com/oss/python/langgraph/graph-api)
-- [LangGraph 持久化与人工中断](https://docs.langchain.com/oss/python/langgraph/persistence)
-- [Crawl4AI Simple Crawling](https://docs.crawl4ai.com/core/simple-crawling/)
-- [Crawl4AI Local Files & Raw HTML](https://docs.crawl4ai.com/core/local-files/)
-- [Crawl4AI Deep Crawling](https://docs.crawl4ai.com/core/deep-crawling/)
+- 本仓库整理完成不等于已经 push、公开部署或通过生产验收；
+- 公开前必须再次检查 Git diff、历史敏感信息、演示资料版权、部署 Secret 和数据备份；
+- 当前仓库尚未选择 `LICENSE`。在维护者明确许可证之前，公开可见不等于获得开源使用授权；
+- 安全问题不应通过公开 Issue 附带 Key、`.env`、真实日志或用户资料。
