@@ -20,8 +20,11 @@
 - Release 1.0 README checkpoint：`6cec4c7`
 - Release 1.0 Security checkpoint：`5dc2292`
 - Release 1.0 Deployment checkpoint：`bade307`
-- Release 1.0 Final Tag：`study-material-v2-release-1.0`，指向 Release Completion Report 提交
-- 远程边界：本地提交未 push；公开部署状态不能由本地 Git 推断
+- Release 1.0 Final Tag：`study-material-v2-release-1.0`，指向 `435ab5e`
+- MIT LICENSE checkpoint：`bbf2bc1`
+- GitHub Public Repository：[zhoushui521-alt/Study-Material-Assistant](https://github.com/zhoushui521-alt/Study-Material-Assistant)
+- GitHub Release：[AI Learning Companion v1.0.0](https://github.com/zhoushui521-alt/Study-Material-Assistant/releases/tag/study-material-v2-release-1.0)
+- 远程边界：`main` 与全部 Stage/Release Tags 已推送，仓库为 Public；这不代表云端应用已部署。
 - 证据层级：代码实现、自动化测试、历史本地运行、真实模型实验、生产验证分别记录，不能互相替代
 
 状态含义：
@@ -214,12 +217,12 @@
 
 ### Release 1.0：GitHub Open Source & Deployment Preparation
 
-- 状态：**Completed（本地发布准备）**；最终边界为 `study-material-v2-release-1.0`。
+- 状态：**Completed（GitHub Public Release）**；Release Tag 为 `study-material-v2-release-1.0`。
 - 范围：重构根目录 README、加固 Git/Docker ignore、审计公开仓库敏感路径、补充部署策略、更新 5 分钟 Demo，并生成 [Release 1.0 Completion Report](release-1.0-completion-report.md)。
-- 安全审计：高置信度历史模式未发现私钥、AWS Key、GitHub Token、OpenAI 风格 `sk-`、Google Key、Slack Token 或非空关键环境变量；`.env.example` 是历史中唯一被跟踪的 env 文件名。
+- 安全审计：实际 Secret 命中 0；一个 `sk-` 形态候选经脱敏复核为 `tests/test_config.py` 的防泄露 Fixture 与 `.example.com` 测试地址。已跟踪运行数据路径命中 0，ignore 敏感路径探针 `12/12`。
 - 自动验证：Model Gateway/API/Observability/Deployment 专项 `25/25`；最终全量自动化 `434/434`，耗时 `29.440s`、退出码 `0`；`pip check` 与前端 JavaScript 语法检查通过。
-- 证据边界：没有修改 RAG、Retrieval、Chunk、Embedding、Reranker、Prompt、Tutor Workflow 或 Model Gateway 核心逻辑；没有 push、Docker build、云部署、真实 Provider 调用、浏览器验收或并发负载测试。
-- 发布边界：仓库当前没有 LICENSE；公开可见不等于已经授予开源许可，维护者仍需在公开发布前选择许可证。
+- 证据边界：没有修改 RAG、Retrieval、Chunk、Embedding、Reranker、Prompt、Tutor Workflow 或 Model Gateway 核心逻辑；已完成 GitHub Push/Public/Release，但没有 Docker build、云端应用部署、真实 Provider 调用或并发负载测试。
+- 发布边界：`main` 已包含 MIT LICENSE（`bbf2bc1`）；既定 Release Tag 指向 `435ab5e`，其历史快照早于 LICENSE 提交。
 
 ## 3. 当前正式主链路
 
@@ -253,7 +256,7 @@ BM25 + RRF、Cross-Encoder 和 Structure-aware Chunking 都是已完成、可复
 - **未验证：** Docker build/up、容器重启恢复、真实 Provider 与 Tutor 全路径质量、当前
   认证版本的真实付费 RAG 闭环、并发/负载、长时间运行、多实例一致性、凭据备份恢复和公开
   安全验收。
-- **发布待办：** 选择并添加 LICENSE；完成后才能把“公开可见”进一步表述为具有明确授权边界的开源仓库。
+- **发布状态：** GitHub 仓库与 Release 已公开；线上应用部署、生产流量和真实 Provider 验收仍未完成。
 
 ## 5. 持续同步规则
 
@@ -274,4 +277,4 @@ BM25 + RRF、Cross-Encoder 和 Structure-aware Chunking 都是已完成、可复
 - 仓库历史同时存在两个“Stage 5.1”语义：`stage5-part1` 是持久化学习数据基础；`stage5-part3` 的报告标题沿用了“Stage 5.1 User Identity”。本文按 Git part 编号同时保留两个历史事实，避免覆盖或改名历史报告。
 - Stage 0、Stage 1、Stage 2 没有独立 Completion Report；Stage 0 也没有独立 Tag。它们的证据强度低于 Stage 3～6，本文已显式标注。
 - [Final Architecture](FINAL_ARCHITECTURE.md) 是 Stage 6 冻结展示快照；Release 1.0 的部署与发布事实以 [Deployment Guide](DEPLOYMENT_GUIDE.md) 和 [Release 1.0 Completion Report](release-1.0-completion-report.md) 为准。
-- Release 1.0 已完成本地 GitHub 与部署准备，但没有 push、云部署、真实 Provider 验收或 LICENSE；不能表述成“已经线上运行”或“已经完成法律意义上的开源发布”。
+- Release 1.0 已完成 GitHub Public Repository、MIT LICENSE 与 GitHub Release；没有云端应用部署、生产流量或真实 Provider 验收，不能表述成“已经线上运行”。

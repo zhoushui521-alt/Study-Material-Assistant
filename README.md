@@ -215,6 +215,7 @@ study-material-assistant/
 - [Interview Guide](docs/INTERVIEW_GUIDE.md)：项目介绍、技术追问与证据边界；
 - [Stage 6 Completion Report](docs/stage6-completion-report.md)：最终工程基线与验证记录。
 - [Release 1.0 Completion Report](docs/release-1.0-completion-report.md)：GitHub、安全、部署与最终 Review。
+- [GitHub Public Release Report](docs/github-release-report.md)：公开仓库、Release、安全复核与远端验证。
 
 ## Validation
 
@@ -248,8 +249,9 @@ node --check web\static\app.js
 - GitHub README 与文档入口收敛；
 - Git 历史、ignore 规则、环境模板与 BYOK 公开安全审查；
 - 部署策略、五分钟 Demo 与 Release 完成报告；
-- 完成 Release 报告与 `study-material-v2-release-1.0` 本地 Tag；
-- 未执行 push、真实云部署或真实模型调用。
+- 完成 Release 报告与 `study-material-v2-release-1.0` Tag，并推送 `main` 与全部 Stage Tags；
+- 添加 MIT LICENSE，发布 GitHub Public Repository 与 `AI Learning Companion v1.0.0` Release；
+- 未执行真实云部署、生产流量验证或真实模型调用。
 
 ### Future - 需要独立验收
 
@@ -264,7 +266,7 @@ Multi-Agent、MCP、GraphRAG、Redis、外部队列和多实例不会为了技�
 
 ## Public Release Boundary
 
-- 本仓库整理完成不等于已经 push、公开部署或通过生产验收；
-- 公开前必须再次检查 Git diff、历史敏感信息、演示资料版权、部署 Secret 和数据备份；
-- 当前仓库尚未选择 `LICENSE`。在维护者明确许可证之前，公开可见不等于获得开源使用授权；
-- 安全问题不应通过公开 Issue 附带 Key、`.env`、真实日志或用户资料。
+- 本仓库已发布到 GitHub Public Repository，并创建 `AI Learning Companion v1.0.0` Release；
+- GitHub 公开发布不等于云端部署、生产流量、真实 Provider 或公开多租户安全验收；
+- `main` 已包含 MIT LICENSE（`bbf2bc1`）；发布 Tag 按既定边界仍指向 `435ab5e`，早于 LICENSE 提交，不擅自移动已发布 Tag；
+- 后续提交仍须检查 Git diff、历史敏感信息、演示资料版权和运行数据；安全问题不应通过公开 Issue 附带 Key、`.env`、真实日志或用户资料。

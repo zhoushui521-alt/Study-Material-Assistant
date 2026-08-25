@@ -3,7 +3,7 @@
 > 面向开发、Review 与交接的最小上下文。当前状态以 [PROJECT_STATUS](PROJECT_STATUS.md) 为准，
 > 架构以 [ARCHITECTURE](ARCHITECTURE.md) 为持续文档，
 > [FINAL_ARCHITECTURE](FINAL_ARCHITECTURE.md) 是 Stage 6 的冻结展示快照。
-> Release 发布准备以 [DEPLOYMENT_GUIDE](DEPLOYMENT_GUIDE.md) 与 [Release 1.0 Report](release-1.0-completion-report.md) 为准。
+> Release 发布准备以 [DEPLOYMENT_GUIDE](DEPLOYMENT_GUIDE.md) 与 [Release 1.0 Report](release-1.0-completion-report.md) 为准；公开发布结果见 [GitHub Release Report](github-release-report.md)。
 
 ## 1. 项目是什么
 
@@ -23,10 +23,10 @@
 - Stage 6.1～6.5 checkpoints：`c3c39e0`、`826f75a`、`6f63f6a`、`8554491`、`c773d05`；
 - Stage 6：**Completed**；最终 Tag：`study-material-v2-stage6-final`；
 - Release 1.0 checkpoints：`6cec4c7`（README）、`5dc2292`（Security）、`bade307`（Deployment）；
-- Release 1.0：**Completed**；最终 Tag：`study-material-v2-release-1.0`；
-- 当前分支：`main`；本地提交尚未 push；
+- Release 1.0：**Completed**；最终 Tag：`study-material-v2-release-1.0` → `435ab5e`；MIT LICENSE：`bbf2bc1`；
+- 当前分支：`main`；已推送到 GitHub Public Repository；
 - Stage 6 没有新增核心业务功能，没有引入 Multi-Agent、MCP、GraphRAG、新数据库或微服务。
-- Release 1.0 只修改 README、ignore 与 docs；没有 push、部署、真实模型调用或索引变更。
+- Release 1.0 与公开发布只修改 README、ignore、LICENSE 与 docs；已完成 GitHub Push/Public/Release，没有云端应用部署、真实模型调用或索引变更。
 
 提交、Tag 与工作区可能继续变化，准确边界必须用当前 `git status`、`git log` 和
 `git tag` 重新确认，不能只依赖本文。
@@ -132,6 +132,6 @@ Git / rules / current evidence
 - 并发、负载、长时间运行、多实例一致性与共享限流；
 - 正式备份恢复、主密钥轮换、公开安全、渗透、SLO 与告警；
 - Claim-level Faithfulness、Citation Support/Accuracy 的稳定基准。
-- 公开仓库 LICENSE 尚未由维护者选择；公开可见不等于已授予开源许可。
+- `main` 已包含 MIT LICENSE；既定 Release Tag 的历史快照早于 LICENSE 提交，未擅自移动已发布 Tag。
 
 这些不是“已经失败”，而是当前证据不足，不能写成已完成。
