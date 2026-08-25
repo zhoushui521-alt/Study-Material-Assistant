@@ -203,6 +203,7 @@ study-material-assistant/
 - [Final Architecture](docs/FINAL_ARCHITECTURE.md)：Stage 6 冻结展示架构；
 - [Architecture](docs/ARCHITECTURE.md)：持续维护的真实架构；
 - [Decisions](docs/DECISIONS.md)：由代码和实验支撑的关键取舍。
+- [Deployment Guide](docs/DEPLOYMENT_GUIDE.md)：单实例部署策略、平台适配、验收与回滚边界。
 
 ### Evaluation、Demo 与面试
 
